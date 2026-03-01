@@ -15,3 +15,7 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Local runtime artifacts
+*.db
+app/api/uploads/

@@ -8,7 +8,7 @@ client = TestClient(app)
 
 
 def setup_function() -> None:
-    jobs_routes.job_service._jobs.clear()
+    jobs_routes.job_service.reset_state_for_tests()
 
 
 def test_create_job_rejects_missing_source() -> None:
