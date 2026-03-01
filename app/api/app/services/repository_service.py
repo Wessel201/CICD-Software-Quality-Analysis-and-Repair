@@ -165,17 +165,39 @@ class RepositoryService:
         if repository_size > self.MAX_REPOSITORY_SIZE_BYTES:
             raise HTTPException(status_code=400, detail="Cloned repository exceeds maximum allowed size of 100 MB.")
 
-        try:
-            revision_result = subprocess.run(
-                ["git", "-C", str(target_directory), "rev-parse", "HEAD"],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-        except subprocess.CalledProcessError as exc:
-            raise HTTPException(status_code=500, detail="Failed to determine cloned repository revision.") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise HTTPException(status_code=500, detail="Timed out while reading cloned repository revision.") from exc
+        return self._resolve_cloned_repository_revision(target_directory)
 
-        return revision_result.stdout.strip()
+    def _resolve_cloned_repository_revision(self, target_directory: Path) -> str:
+        git_commands = [
+            ["git", "-C", str(target_directory), "rev-parse", "HEAD"],
+            ["git", "-C", str(target_directory), "rev-parse", "--verify", "HEAD"],
+            ["git", "-C", str(target_directory), "log", "-1", "--format=%H"],
+        ]
+
+        last_stderr = ""
+        for command in git_commands:
+            try:
+                revision_result = subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise HTTPException(status_code=500, detail="Timed out while reading cloned repository revision.") from exc
+            except subprocess.CalledProcessError as exc:
+                last_stderr = exc.stderr.strip()
+                continue
+
+            commit_hash = revision_result.stdout.strip()
+            if commit_hash:
+                return commit_hash
+
+        if last_stderr:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to determine cloned repository revision: {last_stderr}",
+            )
+
+        raise HTTPException(status_code=500, detail="Failed to determine cloned repository revision.")
