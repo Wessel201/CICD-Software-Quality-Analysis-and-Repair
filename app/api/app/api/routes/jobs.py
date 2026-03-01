@@ -1,5 +1,3 @@
-from typing import Any
-
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from app.schemas.job import JobCreateResponse, JobRepairRequest, JobResultsResponse, JobStatusResponse
