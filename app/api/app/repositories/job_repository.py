@@ -224,12 +224,21 @@ class JobRepository:
         ).scalars()
         return [
             ArtifactInfo(
+                artifact_id=row.id,
                 artifact_type=row.type,
                 storage_key=row.storage_key,
                 content_type=row.content_type,
             )
             for row in rows
         ]
+
+    def get_artifact_for_job(self, job_id: str, artifact_id: int) -> ArtifactModel:
+        artifact = self.session.execute(
+            select(ArtifactModel).where(ArtifactModel.job_id == job_id, ArtifactModel.id == artifact_id)
+        ).scalar_one_or_none()
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="Artifact not found for job.")
+        return artifact
 
     def clear_all(self) -> None:
         self.session.execute(delete(FindingModel))

@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from pathlib import Path
 
 import app.api.routes.jobs as jobs_routes
 from app.main import app
@@ -61,6 +62,26 @@ def _mock_analyzer_findings(*, phase: str) -> list[Finding]:
     ]
 
 
+def _mock_analyzer_findings_with_reports(*, phase: str) -> tuple[list[Finding], dict[str, object]]:
+    findings = _mock_analyzer_findings(phase=phase)
+    reports = {
+        finding.tool: {
+            "tool": finding.tool,
+            "phase": phase,
+            "issues": [
+                {
+                    "rule_id": finding.rule_id,
+                    "message": finding.message,
+                    "file": finding.file,
+                    "line": finding.line,
+                }
+            ],
+        }
+        for finding in findings
+    }
+    return findings, reports
+
+
 def test_create_job_rejects_missing_source() -> None:
     response = client.post("/api/v1/jobs", data={"auto_repair": "true"})
 
@@ -91,8 +112,8 @@ def test_create_job_from_github_url_auto_repair(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         jobs_routes.job_service.analyzer_runner,
-        "analyze_repository",
-        lambda repository_id, source_type, phase: _mock_analyzer_findings(phase=phase),
+        "analyze_repository_with_reports",
+        lambda repository_id, source_type, phase: _mock_analyzer_findings_with_reports(phase=phase),
     )
 
     response = client.post(
@@ -115,8 +136,8 @@ def test_create_job_from_upload_then_repair(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         jobs_routes.job_service.analyzer_runner,
-        "analyze_repository",
-        lambda repository_id, source_type, phase: _mock_analyzer_findings(phase=phase),
+        "analyze_repository_with_reports",
+        lambda repository_id, source_type, phase: _mock_analyzer_findings_with_reports(phase=phase),
     )
 
     create_response = client.post(
@@ -158,3 +179,21 @@ def test_create_job_from_upload_then_repair(monkeypatch) -> None:
     assert "patch" in artifact_types
     assert "analysis_report" in artifact_types
     assert "analysis_report_after" in artifact_types
+
+    analysis_artifact_keys = [
+        artifact["storage_key"]
+        for artifact in artifacts_payload["artifacts"]
+        if artifact["artifact_type"] in {"analysis_report", "analysis_report_after"}
+    ]
+    assert analysis_artifact_keys
+    assert all(Path(key).exists() for key in analysis_artifact_keys)
+
+    downloadable_artifact_id = next(
+        artifact["artifact_id"]
+        for artifact in artifacts_payload["artifacts"]
+        if artifact["artifact_type"] == "analysis_report"
+    )
+    download_response = client.get(f"/api/v1/jobs/{job_id}/artifacts/{downloadable_artifact_id}/download")
+    assert download_response.status_code == 200
+    assert download_response.headers["content-type"].startswith("application/json")
+    assert "tool" in download_response.text

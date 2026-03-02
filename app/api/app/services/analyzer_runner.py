@@ -13,15 +13,41 @@ class AnalyzerRunner:
         self.uploads_dir = uploads_dir or Path("uploads")
 
     def analyze_repository(self, repository_id: str, source_type: str, phase: str) -> list[Finding]:
+        findings, _ = self.analyze_repository_with_reports(repository_id=repository_id, source_type=source_type, phase=phase)
+        return findings
+
+    def analyze_repository_with_reports(
+        self,
+        repository_id: str,
+        source_type: str,
+        phase: str,
+    ) -> tuple[list[Finding], dict[str, object]]:
         source_directory = self._resolve_source_directory(repository_id=repository_id, source_type=source_type, phase=phase)
 
         findings: list[Finding] = []
-        findings.extend(self._run_bandit(source_directory))
-        findings.extend(self._run_ruff(source_directory))
-        findings.extend(self._run_radon(source_directory))
-        findings.extend(self._run_trufflehog(source_directory))
+        reports: dict[str, object] = {}
 
-        return findings
+        bandit_findings, bandit_report = self._run_bandit(source_directory)
+        if bandit_report is not None:
+            reports["bandit"] = bandit_report
+        findings.extend(bandit_findings)
+
+        ruff_findings, ruff_report = self._run_ruff(source_directory)
+        if ruff_report is not None:
+            reports["ruff"] = ruff_report
+        findings.extend(ruff_findings)
+
+        radon_findings, radon_report = self._run_radon(source_directory)
+        if radon_report is not None:
+            reports["radon"] = radon_report
+        findings.extend(radon_findings)
+
+        trufflehog_findings, trufflehog_report = self._run_trufflehog(source_directory)
+        if trufflehog_report is not None:
+            reports["trufflehog"] = trufflehog_report
+        findings.extend(trufflehog_findings)
+
+        return findings, reports
 
     def _resolve_source_directory(self, repository_id: str, source_type: str, phase: str) -> Path:
         repository_root = self.uploads_dir / repository_id
@@ -53,13 +79,13 @@ class AnalyzerRunner:
 
         return source_directory
 
-    def _run_bandit(self, source_directory: Path) -> list[Finding]:
+    def _run_bandit(self, source_directory: Path) -> tuple[list[Finding], dict[str, object] | None]:
         result = self._execute_command(["bandit", "-r", str(source_directory), "-f", "json"])
         if result is None:
-            return []
+            return [], None
 
         if result.returncode not in {0, 1}:
-            return []
+            return [], None
 
         payload = self._load_json_object(result.stdout)
         issues = payload.get("results", []) if isinstance(payload, dict) else []
@@ -78,15 +104,15 @@ class AnalyzerRunner:
                     suggestion="Review and remediate the reported security issue.",
                 )
             )
-        return findings
+        return findings, payload
 
-    def _run_ruff(self, source_directory: Path) -> list[Finding]:
+    def _run_ruff(self, source_directory: Path) -> tuple[list[Finding], list[dict] | None]:
         result = self._execute_command(["ruff", "check", str(source_directory), "--output-format", "json"])
         if result is None:
-            return []
+            return [], None
 
         if result.returncode not in {0, 1}:
-            return []
+            return [], None
 
         payload = self._load_json_array(result.stdout)
         findings: list[Finding] = []
@@ -105,20 +131,20 @@ class AnalyzerRunner:
                     suggestion="Apply lint recommendation for cleaner code.",
                 )
             )
-        return findings
+        return findings, payload
 
-    def _run_radon(self, source_directory: Path) -> list[Finding]:
+    def _run_radon(self, source_directory: Path) -> tuple[list[Finding], dict[str, object] | None]:
         result = self._execute_command(["radon", "cc", str(source_directory), "-j", "-s"])
         if result is None:
-            return []
+            return [], None
 
         if result.returncode != 0:
-            return []
+            return [], None
 
         payload = self._load_json_object(result.stdout)
         findings: list[Finding] = []
         if not isinstance(payload, dict):
-            return findings
+            return findings, payload
 
         for file_path, entries in payload.items():
             if not isinstance(entries, list):
@@ -137,17 +163,18 @@ class AnalyzerRunner:
                         suggestion="Split logic into smaller functions.",
                     )
                 )
-        return findings
+        return findings, payload
 
-    def _run_trufflehog(self, source_directory: Path) -> list[Finding]:
+    def _run_trufflehog(self, source_directory: Path) -> tuple[list[Finding], list[dict] | None]:
         result = self._execute_command(["trufflehog", "filesystem", str(source_directory), "--json"])
         if result is None:
-            return []
+            return [], None
 
         if result.returncode not in {0, 1}:
-            return []
+            return [], None
 
         findings: list[Finding] = []
+        raw_results: list[dict] = []
         for line in result.stdout.splitlines():
             line = line.strip()
             if not line:
@@ -156,6 +183,9 @@ class AnalyzerRunner:
                 payload = json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+            if isinstance(payload, dict):
+                raw_results.append(payload)
 
             source_metadata = payload.get("SourceMetadata", {})
             source_data = source_metadata.get("Data", {}) if isinstance(source_metadata, dict) else {}
@@ -174,7 +204,7 @@ class AnalyzerRunner:
                 )
             )
 
-        return findings
+        return findings, raw_results
 
     @staticmethod
     def _execute_command(command: list[str]) -> subprocess.CompletedProcess[str] | None:

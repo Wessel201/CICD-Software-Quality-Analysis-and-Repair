@@ -61,6 +61,7 @@ class JobResultsResponse(BaseModel):
 
 
 class ArtifactInfo(BaseModel):
+    artifact_id: int | None = None
     artifact_type: str
     storage_key: str
     content_type: str | None

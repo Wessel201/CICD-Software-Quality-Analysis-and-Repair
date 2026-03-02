@@ -1,4 +1,5 @@
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 
 from app.schemas.job import JobArtifactsResponse, JobCreateResponse, JobRepairRequest, JobResultsResponse, JobStatusResponse
 from app.services.job_service import JobService
@@ -52,6 +53,16 @@ def get_job_results(job_id: str) -> JobResultsResponse:
 @router.get("/{job_id}/artifacts", response_model=JobArtifactsResponse)
 def get_job_artifacts(job_id: str) -> JobArtifactsResponse:
     return job_service.get_job_artifacts(job_id)
+
+
+@router.get("/{job_id}/artifacts/{artifact_id}/download")
+def download_job_artifact(job_id: str, artifact_id: int) -> FileResponse:
+    artifact_path, content_type = job_service.get_job_artifact_download(job_id=job_id, artifact_id=artifact_id)
+    return FileResponse(
+        path=artifact_path,
+        media_type=content_type or "application/octet-stream",
+        filename=artifact_path.name,
+    )
 
 
 @router.post("/{job_id}/repair", response_model=JobStatusResponse, status_code=status.HTTP_202_ACCEPTED)

@@ -1,6 +1,8 @@
 from threading import Lock
 from uuid import uuid4
 import os
+from pathlib import Path
+import json
 
 from fastapi import HTTPException
 
@@ -92,6 +94,27 @@ class JobService:
             artifacts = repository.get_artifacts(job_id=job_id)
             return JobArtifactsResponse(job_id=snapshot.job_id, artifacts=artifacts)
 
+    def get_job_artifact_download(self, job_id: str, artifact_id: int) -> tuple[Path, str | None]:
+        with SessionLocal() as session:
+            repository = JobRepository(session)
+            repository.get_job_snapshot(job_id)
+            artifact = repository.get_artifact_for_job(job_id=job_id, artifact_id=artifact_id)
+
+        artifact_path = Path(artifact.storage_key)
+        if not artifact_path.is_absolute():
+            artifact_path = Path.cwd() / artifact_path
+
+        artifact_path = artifact_path.resolve()
+        allowed_root = (Path.cwd() / "uploads" / job_id / "artifacts").resolve()
+
+        if allowed_root not in artifact_path.parents:
+            raise HTTPException(status_code=403, detail="Artifact path is outside allowed job artifact directory.")
+
+        if not artifact_path.exists() or not artifact_path.is_file():
+            raise HTTPException(status_code=404, detail="Artifact file is missing from storage.")
+
+        return artifact_path, artifact.content_type
+
     def trigger_repair(self, job_id: str, repair_strategy: str) -> JobStatusResponse:
         with self._lock:
             with SessionLocal() as session:
@@ -156,20 +179,18 @@ class JobService:
                     self._transition(repository, job_id, JobStatusDb.FETCHING, 15, "fetching_source")
                     self._transition(repository, job_id, JobStatusDb.ANALYZING, 50, "running_static_analysis")
 
-                    before_findings = self.analyzer_runner.analyze_repository(
+                    before_findings, before_reports = self.analyzer_runner.analyze_repository_with_reports(
                         repository_id=job_context.repository_id,
                         source_type=job_context.source_type,
                         phase="before",
                     )
                     repository.replace_findings_for_phase(job_id=job_id, phase=AnalysisPhase.BEFORE, findings=before_findings)
-                    analysis_artifacts = [
-                        ArtifactInfo(
-                            artifact_type="analysis_report",
-                            storage_key=f"artifacts://{job_id}/analysis/{finding.tool}.json",
-                            content_type="application/json",
-                        )
-                        for finding in before_findings
-                    ]
+                    analysis_artifacts = self._write_analysis_artifacts(
+                        job_id=job_id,
+                        stage="analysis",
+                        artifact_type="analysis_report",
+                        reports=before_reports,
+                    )
                     if analysis_artifacts:
                         repository.replace_artifacts_by_type(
                             job_id=job_id,
@@ -208,7 +229,7 @@ class JobService:
 
                     self._transition(repository, job_id, JobStatusDb.REANALYZING, 92, "re_running_static_analysis")
 
-                    after_findings = self.analyzer_runner.analyze_repository(
+                    after_findings, after_reports = self.analyzer_runner.analyze_repository_with_reports(
                         repository_id=job_context.repository_id,
                         source_type=job_context.source_type,
                         phase="after",
@@ -222,14 +243,12 @@ class JobService:
 
                     repository.replace_findings_for_phase(job_id=job_id, phase=AnalysisPhase.AFTER, findings=after_findings)
                     repository.replace_patches(job_id=job_id, patches=patches)
-                    repair_artifacts = [
-                        ArtifactInfo(
-                            artifact_type="analysis_report_after",
-                            storage_key=f"artifacts://{job_id}/repair/{finding.tool}.json",
-                            content_type="application/json",
-                        )
-                        for finding in after_findings
-                    ]
+                    repair_artifacts = self._write_analysis_artifacts(
+                        job_id=job_id,
+                        stage="repair",
+                        artifact_type="analysis_report_after",
+                        reports=after_reports,
+                    )
                     if repair_artifacts:
                         repository.replace_artifacts_by_type(
                             job_id=job_id,
@@ -241,6 +260,30 @@ class JobService:
                     session.commit()
         except Exception as exc:
             self._mark_failed(job_id=job_id, step="repair_failed", message=str(exc))
+
+    def _write_analysis_artifacts(
+        self,
+        job_id: str,
+        stage: str,
+        artifact_type: str,
+        reports: dict[str, object],
+    ) -> list[ArtifactInfo]:
+        artifacts_dir = Path("uploads") / job_id / "artifacts" / stage
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+        artifacts: list[ArtifactInfo] = []
+        for tool, payload in reports.items():
+            artifact_file = artifacts_dir / f"{tool}.json"
+            artifact_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            artifacts.append(
+                ArtifactInfo(
+                    artifact_type=artifact_type,
+                    storage_key=artifact_file.as_posix(),
+                    content_type="application/json",
+                )
+            )
+
+        return artifacts
 
     def reset_state_for_tests(self) -> None:
         init_db()
