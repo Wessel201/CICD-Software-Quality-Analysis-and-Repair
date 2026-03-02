@@ -19,3 +19,4 @@ dist/
 # Local runtime artifacts
 *.db
 app/api/uploads/
+/.idea

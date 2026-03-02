@@ -11,6 +11,7 @@ def create_celery_app() -> Celery:
         "code_quality_orchestrator",
         broker=broker_url,
         backend=result_backend,
+        include=["app.workers.job_tasks"],
     )
 
     task_always_eager = os.getenv("CELERY_TASK_ALWAYS_EAGER", "true").lower() == "true"
@@ -19,6 +20,7 @@ def create_celery_app() -> Celery:
         task_eager_propagates=True,
         task_track_started=True,
     )
+    celery_application.autodiscover_tasks(["app.workers"])
 
     return celery_application
 

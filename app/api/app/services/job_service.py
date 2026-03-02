@@ -1,5 +1,6 @@
 from threading import Lock
 from uuid import uuid4
+import os
 
 from fastapi import HTTPException
 
@@ -7,7 +8,9 @@ from app.db.models import AnalysisPhase, JobStatusDb
 from app.db.init_db import init_db
 from app.db.session import SessionLocal
 from app.repositories.job_repository import JobRepository
+from app.services.analyzer_runner import AnalyzerRunner
 from app.schemas.job import Finding, JobCreateResponse, JobResultsResponse, JobStatus, JobStatusResponse, JobSummary, PatchInfo
+from app.schemas.job import ArtifactInfo, JobArtifactsResponse
 
 
 class JobService:
@@ -22,6 +25,9 @@ class JobService:
         JobStatusDb.DONE: set(),
         JobStatusDb.FAILED: set(),
     }
+
+    def __init__(self, analyzer_runner: AnalyzerRunner | None = None) -> None:
+        self.analyzer_runner = analyzer_runner or AnalyzerRunner()
 
     def create_job(self, source_type: str, source_reference: str, auto_repair: bool) -> JobCreateResponse:
         job_id = f"job_{uuid4().hex[:12]}"
@@ -79,6 +85,13 @@ class JobService:
                 patches=patches,
             )
 
+    def get_job_artifacts(self, job_id: str) -> JobArtifactsResponse:
+        with SessionLocal() as session:
+            repository = JobRepository(session)
+            snapshot = repository.get_job_snapshot(job_id)
+            artifacts = repository.get_artifacts(job_id=job_id)
+            return JobArtifactsResponse(job_id=snapshot.job_id, artifacts=artifacts)
+
     def trigger_repair(self, job_id: str, repair_strategy: str) -> JobStatusResponse:
         with self._lock:
             with SessionLocal() as session:
@@ -110,6 +123,10 @@ class JobService:
         return self.get_job_status(job_id)
 
     def dispatch_analysis_pipeline(self, job_id: str, auto_repair: bool) -> None:
+        if os.getenv("CELERY_TASK_ALWAYS_EAGER", "true").lower() == "true":
+            self.run_analysis_pipeline(job_id=job_id, auto_repair=auto_repair)
+            return
+
         try:
             from app.workers.job_tasks import run_analysis_pipeline_task
 
@@ -118,6 +135,10 @@ class JobService:
             self.run_analysis_pipeline(job_id=job_id, auto_repair=auto_repair)
 
     def dispatch_repair_pipeline(self, job_id: str, repair_strategy: str) -> None:
+        if os.getenv("CELERY_TASK_ALWAYS_EAGER", "true").lower() == "true":
+            self.run_repair_pipeline(job_id=job_id, repair_strategy=repair_strategy)
+            return
+
         try:
             from app.workers.job_tasks import run_repair_pipeline_task
 
@@ -126,96 +147,100 @@ class JobService:
             self.run_repair_pipeline(job_id=job_id, repair_strategy=repair_strategy)
 
     def run_analysis_pipeline(self, job_id: str, auto_repair: bool) -> None:
-        with self._lock:
-            with SessionLocal() as session:
-                repository = JobRepository(session)
-                self._transition(repository, job_id, JobStatusDb.FETCHING, 15, "fetching_source")
-                self._transition(repository, job_id, JobStatusDb.ANALYZING, 50, "running_static_analysis")
+        try:
+            with self._lock:
+                with SessionLocal() as session:
+                    repository = JobRepository(session)
+                    job_context = repository.get_job_context(job_id)
 
-                before_findings = [
-                    Finding(
-                        tool="bandit",
-                        rule_id="B105",
-                        severity="high",
-                        category="security",
-                        file="app/auth.py",
-                        line=14,
-                        message="Possible hardcoded password string.",
-                        suggestion="Use environment-based secret management.",
-                    ),
-                    Finding(
-                        tool="ruff",
-                        rule_id="F401",
-                        severity="low",
-                        category="code_smell",
-                        file="app/main.py",
-                        line=2,
-                        message="Imported but unused name.",
-                        suggestion="Remove unused imports.",
-                    ),
-                    Finding(
-                        tool="radon",
-                        rule_id="CC",
-                        severity="medium",
-                        category="complexity",
-                        file="app/service.py",
-                        line=30,
-                        message="Cyclomatic complexity is too high (13).",
-                        suggestion="Split logic into smaller functions.",
-                    ),
-                ]
-                repository.replace_findings_for_phase(job_id=job_id, phase=AnalysisPhase.BEFORE, findings=before_findings)
+                    self._transition(repository, job_id, JobStatusDb.FETCHING, 15, "fetching_source")
+                    self._transition(repository, job_id, JobStatusDb.ANALYZING, 50, "running_static_analysis")
 
-                self._transition(repository, job_id, JobStatusDb.READY_FOR_REPAIR, 65, "analysis_completed")
-                session.commit()
+                    before_findings = self.analyzer_runner.analyze_repository(
+                        repository_id=job_context.repository_id,
+                        source_type=job_context.source_type,
+                        phase="before",
+                    )
+                    repository.replace_findings_for_phase(job_id=job_id, phase=AnalysisPhase.BEFORE, findings=before_findings)
+                    analysis_artifacts = [
+                        ArtifactInfo(
+                            artifact_type="analysis_report",
+                            storage_key=f"artifacts://{job_id}/analysis/{finding.tool}.json",
+                            content_type="application/json",
+                        )
+                        for finding in before_findings
+                    ]
+                    if analysis_artifacts:
+                        repository.replace_artifacts_by_type(
+                            job_id=job_id,
+                            artifact_type="analysis_report",
+                            artifacts=analysis_artifacts,
+                        )
+
+                    self._transition(repository, job_id, JobStatusDb.READY_FOR_REPAIR, 65, "analysis_completed")
+                    session.commit()
+        except Exception as exc:
+            self._mark_failed(job_id=job_id, step="analysis_failed", message=str(exc))
+            return
 
         if auto_repair:
             self.run_repair_pipeline(job_id=job_id, repair_strategy="balanced")
 
     def run_repair_pipeline(self, job_id: str, repair_strategy: str = "balanced") -> None:
-        with self._lock:
-            with SessionLocal() as session:
-                repository = JobRepository(session)
-                snapshot = repository.get_job_snapshot(job_id)
-                if snapshot.status == JobStatusDb.DONE:
-                    return
+        try:
+            with self._lock:
+                with SessionLocal() as session:
+                    repository = JobRepository(session)
+                    job_context = repository.get_job_context(job_id)
+                    snapshot = repository.get_job_snapshot(job_id)
+                    if snapshot.status == JobStatusDb.DONE:
+                        return
 
-                if snapshot.status != JobStatusDb.REPAIRING:
-                    self._transition(repository, job_id, JobStatusDb.REPAIRING, 80, f"applying_llm_repair_{repair_strategy}")
-                else:
-                    repository.update_job_state(
-                        job_id,
-                        status=JobStatusDb.REPAIRING,
-                        progress=80,
-                        current_step=f"applying_llm_repair_{repair_strategy}",
+                    if snapshot.status != JobStatusDb.REPAIRING:
+                        self._transition(repository, job_id, JobStatusDb.REPAIRING, 80, f"applying_llm_repair_{repair_strategy}")
+                    else:
+                        repository.update_job_state(
+                            job_id,
+                            status=JobStatusDb.REPAIRING,
+                            progress=80,
+                            current_step=f"applying_llm_repair_{repair_strategy}",
+                        )
+
+                    self._transition(repository, job_id, JobStatusDb.REANALYZING, 92, "re_running_static_analysis")
+
+                    after_findings = self.analyzer_runner.analyze_repository(
+                        repository_id=job_context.repository_id,
+                        source_type=job_context.source_type,
+                        phase="after",
                     )
+                    patches = [
+                        PatchInfo(
+                            file="app/service.py",
+                            diff_url=f"artifacts://{job_id}/patches/app_service.patch",
+                        )
+                    ]
 
-                self._transition(repository, job_id, JobStatusDb.REANALYZING, 92, "re_running_static_analysis")
+                    repository.replace_findings_for_phase(job_id=job_id, phase=AnalysisPhase.AFTER, findings=after_findings)
+                    repository.replace_patches(job_id=job_id, patches=patches)
+                    repair_artifacts = [
+                        ArtifactInfo(
+                            artifact_type="analysis_report_after",
+                            storage_key=f"artifacts://{job_id}/repair/{finding.tool}.json",
+                            content_type="application/json",
+                        )
+                        for finding in after_findings
+                    ]
+                    if repair_artifacts:
+                        repository.replace_artifacts_by_type(
+                            job_id=job_id,
+                            artifact_type="analysis_report_after",
+                            artifacts=repair_artifacts,
+                        )
 
-                after_findings = [
-                    Finding(
-                        tool="radon",
-                        rule_id="CC",
-                        severity="low",
-                        category="complexity",
-                        file="app/service.py",
-                        line=30,
-                        message="Cyclomatic complexity reduced to 7.",
-                        suggestion="Continue decomposition if needed.",
-                    )
-                ]
-                patches = [
-                    PatchInfo(
-                        file="app/service.py",
-                        diff_url=f"artifacts://{job_id}/patches/app_service.patch",
-                    )
-                ]
-
-                repository.replace_findings_for_phase(job_id=job_id, phase=AnalysisPhase.AFTER, findings=after_findings)
-                repository.replace_patches(job_id=job_id, patches=patches)
-
-                self._transition(repository, job_id, JobStatusDb.DONE, 100, "completed")
-                session.commit()
+                    self._transition(repository, job_id, JobStatusDb.DONE, 100, "completed")
+                    session.commit()
+        except Exception as exc:
+            self._mark_failed(job_id=job_id, step="repair_failed", message=str(exc))
 
     def reset_state_for_tests(self) -> None:
         init_db()
@@ -246,6 +271,23 @@ class JobService:
             progress=progress,
             current_step=current_step,
         )
+
+    def _mark_failed(self, job_id: str, step: str, message: str) -> None:
+        with self._lock:
+            with SessionLocal() as session:
+                repository = JobRepository(session)
+                snapshot = repository.get_job_snapshot(job_id)
+                allowed = self._allowed_transitions.get(snapshot.status, set())
+                if JobStatusDb.FAILED in allowed:
+                    repository.update_job_state(
+                        job_id=job_id,
+                        status=JobStatusDb.FAILED,
+                        progress=100,
+                        current_step=step,
+                        error_message=message,
+                        error_code="PIPELINE_ERROR",
+                    )
+                    session.commit()
 
     @staticmethod
     def _build_summary(before: list[Finding], after: list[Finding]) -> JobSummary:

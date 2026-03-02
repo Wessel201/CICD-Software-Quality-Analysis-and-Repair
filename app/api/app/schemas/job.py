@@ -60,6 +60,17 @@ class JobResultsResponse(BaseModel):
     patches: list[PatchInfo]
 
 
+class ArtifactInfo(BaseModel):
+    artifact_type: str
+    storage_key: str
+    content_type: str | None
+
+
+class JobArtifactsResponse(BaseModel):
+    job_id: str
+    artifacts: list[ArtifactInfo]
+
+
 class JobRepairRequest(BaseModel):
     repair_strategy: Literal["balanced", "aggressive", "safe"] = "balanced"
 

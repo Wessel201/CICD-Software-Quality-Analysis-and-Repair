@@ -16,7 +16,7 @@ from app.db.models import (
     RepositoryModel,
     SourceType,
 )
-from app.schemas.job import Finding, PatchInfo
+from app.schemas.job import ArtifactInfo, Finding, PatchInfo
 
 
 @dataclass
@@ -27,6 +27,13 @@ class JobSnapshot:
     current_step: str
     error_message: str | None
     created_at: datetime
+
+
+@dataclass
+class JobContext:
+    job_id: str
+    repository_id: str
+    source_type: str
 
 
 class JobRepository:
@@ -140,6 +147,19 @@ class JobRepository:
             )
         self.session.flush()
 
+    def replace_artifacts_by_type(self, job_id: str, artifact_type: str, artifacts: list[ArtifactInfo]) -> None:
+        self.session.execute(delete(ArtifactModel).where(ArtifactModel.job_id == job_id, ArtifactModel.type == artifact_type))
+        for artifact in artifacts:
+            self.session.add(
+                ArtifactModel(
+                    job_id=job_id,
+                    type=artifact.artifact_type,
+                    storage_key=artifact.storage_key,
+                    content_type=artifact.content_type,
+                )
+            )
+        self.session.flush()
+
     def get_job_snapshot(self, job_id: str) -> JobSnapshot:
         job = self.get_job(job_id)
         return JobSnapshot(
@@ -149,6 +169,18 @@ class JobRepository:
             current_step=job.current_step,
             error_message=job.error_message,
             created_at=job.created_at,
+        )
+
+    def get_job_context(self, job_id: str) -> JobContext:
+        job = self.get_job(job_id)
+        repository = self.session.get(RepositoryModel, job.repository_id)
+        if repository is None:
+            raise HTTPException(status_code=404, detail="Repository not found for job.")
+
+        return JobContext(
+            job_id=job.id,
+            repository_id=repository.id,
+            source_type=repository.source_type.value,
         )
 
     def get_findings_for_phase(self, job_id: str, phase: AnalysisPhase) -> list[Finding]:
@@ -185,6 +217,19 @@ class JobRepository:
             file_hint = row.storage_key.split("/")[-1].replace(".patch", ".py")
             patches.append(PatchInfo(file=file_hint or "unknown", diff_url=row.storage_key))
         return patches
+
+    def get_artifacts(self, job_id: str) -> list[ArtifactInfo]:
+        rows = self.session.execute(
+            select(ArtifactModel).where(ArtifactModel.job_id == job_id).order_by(ArtifactModel.id.asc())
+        ).scalars()
+        return [
+            ArtifactInfo(
+                artifact_type=row.type,
+                storage_key=row.storage_key,
+                content_type=row.content_type,
+            )
+            for row in rows
+        ]
 
     def clear_all(self) -> None:
         self.session.execute(delete(FindingModel))

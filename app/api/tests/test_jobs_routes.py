@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 import app.api.routes.jobs as jobs_routes
 from app.main import app
+from app.schemas.job import Finding
 
 
 client = TestClient(app)
@@ -9,6 +10,55 @@ client = TestClient(app)
 
 def setup_function() -> None:
     jobs_routes.job_service.reset_state_for_tests()
+
+
+def _mock_analyzer_findings(*, phase: str) -> list[Finding]:
+    if phase == "after":
+        return [
+            Finding(
+                tool="radon",
+                rule_id="CC",
+                severity="low",
+                category="complexity",
+                file="app/service.py",
+                line=30,
+                message="Cyclomatic complexity reduced.",
+                suggestion="Continue decomposition if needed.",
+            )
+        ]
+
+    return [
+        Finding(
+            tool="bandit",
+            rule_id="B105",
+            severity="high",
+            category="security",
+            file="app/auth.py",
+            line=14,
+            message="Possible hardcoded password string.",
+            suggestion="Use environment-based secret management.",
+        ),
+        Finding(
+            tool="ruff",
+            rule_id="F401",
+            severity="low",
+            category="code_smell",
+            file="app/main.py",
+            line=2,
+            message="Imported but unused name.",
+            suggestion="Remove unused imports.",
+        ),
+        Finding(
+            tool="radon",
+            rule_id="CC",
+            severity="medium",
+            category="complexity",
+            file="app/service.py",
+            line=30,
+            message="Cyclomatic complexity is high.",
+            suggestion="Split logic into smaller functions.",
+        ),
+    ]
 
 
 def test_create_job_rejects_missing_source() -> None:
@@ -39,6 +89,11 @@ def test_create_job_from_github_url_auto_repair(monkeypatch) -> None:
         "clone_public_repository",
         lambda _: ("repository-1", "abcdef0123456789"),
     )
+    monkeypatch.setattr(
+        jobs_routes.job_service.analyzer_runner,
+        "analyze_repository",
+        lambda repository_id, source_type, phase: _mock_analyzer_findings(phase=phase),
+    )
 
     response = client.post(
         "/api/v1/jobs",
@@ -57,6 +112,11 @@ def test_create_job_from_upload_then_repair(monkeypatch) -> None:
         jobs_routes.repository_service,
         "store_uploaded_archive",
         lambda _: ("repository-2", "repo.zip"),
+    )
+    monkeypatch.setattr(
+        jobs_routes.job_service.analyzer_runner,
+        "analyze_repository",
+        lambda repository_id, source_type, phase: _mock_analyzer_findings(phase=phase),
     )
 
     create_response = client.post(
@@ -88,3 +148,13 @@ def test_create_job_from_upload_then_repair(monkeypatch) -> None:
     assert results_payload["summary"]["before_total"] == 3
     assert results_payload["summary"]["after_total"] == 1
     assert len(results_payload["patches"]) == 1
+
+    artifacts_response = client.get(f"/api/v1/jobs/{job_id}/artifacts")
+    assert artifacts_response.status_code == 200
+    artifacts_payload = artifacts_response.json()
+    assert artifacts_payload["job_id"] == job_id
+    assert len(artifacts_payload["artifacts"]) == 5
+    artifact_types = {artifact["artifact_type"] for artifact in artifacts_payload["artifacts"]}
+    assert "patch" in artifact_types
+    assert "analysis_report" in artifact_types
+    assert "analysis_report_after" in artifact_types

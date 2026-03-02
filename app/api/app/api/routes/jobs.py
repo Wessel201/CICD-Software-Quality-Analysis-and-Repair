@@ -1,6 +1,6 @@
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
-from app.schemas.job import JobCreateResponse, JobRepairRequest, JobResultsResponse, JobStatusResponse
+from app.schemas.job import JobArtifactsResponse, JobCreateResponse, JobRepairRequest, JobResultsResponse, JobStatusResponse
 from app.services.job_service import JobService
 from app.services.repository_service import RepositoryService
 from app.validators.job_validators import validate_job_source
@@ -47,6 +47,11 @@ def get_job_status(job_id: str) -> JobStatusResponse:
 @router.get("/{job_id}/results", response_model=JobResultsResponse)
 def get_job_results(job_id: str) -> JobResultsResponse:
     return job_service.get_job_results(job_id)
+
+
+@router.get("/{job_id}/artifacts", response_model=JobArtifactsResponse)
+def get_job_artifacts(job_id: str) -> JobArtifactsResponse:
+    return job_service.get_job_artifacts(job_id)
 
 
 @router.post("/{job_id}/repair", response_model=JobStatusResponse, status_code=status.HTTP_202_ACCEPTED)
