@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { ThemeToggle } from "./theme-toggle";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"upload" | "github">("upload");
@@ -28,14 +27,16 @@ export default function Home() {
 
   return (
     <>
-      <ThemeToggle />
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 py-12 px-4 transition-colors">
+      <div className="min-h-screen bg-gradient-to-br from-blue-100 to-indigo-200 dark:from-gray-900 dark:to-gray-800 py-12 px-4 transition-colors duration-300">
         <div className="max-w-2xl mx-auto">
           {/* Header */}
           <div className="text-center mb-8">
-            <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-2">
-              Code Quality Analyzer
-            </h1>
+            <div className="flex items-center justify-center gap-3 mb-2">
+              <img src="/favicon.svg" alt="logo" className="w-10 h-10" />
+              <h1 className="text-4xl font-bold text-gray-900 dark:text-white">
+                Code Quality Analyzer
+              </h1>
+            </div>
             <p className="text-gray-600 dark:text-gray-300">
               Upload your project and get AI-powered improvements
             </p>

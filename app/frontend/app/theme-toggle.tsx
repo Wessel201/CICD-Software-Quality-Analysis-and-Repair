@@ -8,28 +8,40 @@ export function ThemeToggle() {
   return (
     <button
       onClick={toggleTheme}
-      className="fixed top-4 right-4 p-2 rounded-lg bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+      className="fixed top-4 right-4 p-2.5 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all duration-200 hover:scale-110 shadow-md hover:shadow-lg"
       aria-label="Toggle theme"
+      title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
     >
       {theme === "light" ? (
+        /* Sun: solid circle with radiating rays */
         <svg
-          className="w-6 h-6 text-gray-800"
-          fill="currentColor"
-          viewBox="0 0 20 20"
+          className="w-6 h-6 text-yellow-500"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          viewBox="0 0 24 24"
+          xmlns="http://www.w3.org/2000/svg"
         >
-          <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
+          <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />
+          <line x1="12" y1="2" x2="12" y2="5" />
+          <line x1="12" y1="19" x2="12" y2="22" />
+          <line x1="2" y1="12" x2="5" y2="12" />
+          <line x1="19" y1="12" x2="22" y2="12" />
+          <line x1="4.22" y1="4.22" x2="6.34" y2="6.34" />
+          <line x1="17.66" y1="17.66" x2="19.78" y2="19.78" />
+          <line x1="19.78" y1="4.22" x2="17.66" y2="6.34" />
+          <line x1="6.34" y1="17.66" x2="4.22" y2="19.78" />
         </svg>
       ) : (
+        /* Moon */
         <svg
-          className="w-6 h-6 text-yellow-400"
+          className="w-6 h-6 text-blue-300"
           fill="currentColor"
-          viewBox="0 0 20 20"
+          viewBox="0 0 24 24"
+          xmlns="http://www.w3.org/2000/svg"
         >
-          <path
-            fillRule="evenodd"
-            d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4.22 1.78a1 1 0 011.414-1.414l.707.707a1 1 0 01-1.414 1.414l-.707-.707zm2.828 2.828a1 1 0 011.414-1.414l.707.707a1 1 0 01-1.414 1.414l-.707-.707zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464a1 1 0 11-1.414-1.414l-.707.707a1 1 0 011.414 1.414l.707-.707zm1.414 8.486a1 1 0 11-1.414-1.414l-.707.707a1 1 0 011.414 1.414l.707-.707zm2.121-2.121a1 1 0 011.414-1.414l.707.707a1 1 0 01-1.414 1.414l-.707-.707zM3 11a1 1 0 100-2H2a1 1 0 100 2h1zm0-7a1 1 0 011 1v1a1 1 0 11-2 0V5a1 1 0 011-1z"
-            clipRule="evenodd"
-          />
+          <path d="M21 12.79A9 9 0 1111.21 3a7 7 0 109.79 9.79z" />
         </svg>
       )}
     </button>
