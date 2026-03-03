@@ -22,7 +22,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    // Get system preference
     const prefersDark = window.matchMedia(
       "(prefers-color-scheme: dark)",
     ).matches;

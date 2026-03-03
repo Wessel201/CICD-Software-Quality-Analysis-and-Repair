@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useTheme } from "./providers";
+import { useTheme } from "../providers/ThemeProvider";
 
 const ACCEPTED_EXTENSIONS = [".zip", ".py"];
 
