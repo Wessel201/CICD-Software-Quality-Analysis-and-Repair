@@ -80,14 +80,6 @@ export default function Home() {
               onChange={(e) => setGithubUrl(e.target.value)}
               className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-colors"
             />
-            <div className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700">
-              <svg className="w-4 h-4 shrink-0 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-              </svg>
-              <span className="text-xs text-amber-700 dark:text-amber-400">
-                Only <strong>.zip</strong> archives and <strong>.py</strong> files are currently supported
-              </span>
-            </div>
           </div>
 
           {/* Divider */}
@@ -140,24 +132,6 @@ export default function Home() {
               )}
             </div>
 
-            {/* File warning */}
-            {fileWarning && (
-              <p className="mt-2 text-sm text-red-600 dark:text-red-400 flex items-center gap-1.5">
-                <svg
-                  className="w-4 h-4 shrink-0"
-                  fill="currentColor"
-                  viewBox="0 0 20 20"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-                {fileWarning}
-              </p>
-            )}
-
             <input
               id="file-input"
               type="file"
@@ -165,6 +139,41 @@ export default function Home() {
               onChange={handleFileSelect}
               className="hidden"
             />
+          </div>
+          {/* File warning */}
+          {fileWarning && (
+            <p className="mt-2 text-sm text-red-600 dark:text-red-400 flex items-center gap-1.5">
+              <svg
+                className="w-4 h-4 shrink-0"
+                fill="currentColor"
+                viewBox="0 0 20 20"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              {fileWarning}
+            </p>
+          )}
+
+          <div className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700">
+            <svg
+              className="w-4 h-4 shrink-0 text-amber-500"
+              fill="currentColor"
+              viewBox="0 0 20 20"
+            >
+              <path
+                fillRule="evenodd"
+                d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+                clipRule="evenodd"
+              />
+            </svg>
+            <span className="text-xs text-amber-700 dark:text-amber-400">
+              Only <strong>.zip</strong> archives and <strong>.py</strong> files
+              are currently supported
+            </span>
           </div>
 
           {/* Submit */}
