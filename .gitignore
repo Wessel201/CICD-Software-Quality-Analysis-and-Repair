@@ -1,4 +1,8 @@
 .env
+/terraform/.terraform/
+.DS_Store
+terraform.tfstate
+terraform.tfstate.backup
 
 # Python cache / bytecode
 __pycache__/
