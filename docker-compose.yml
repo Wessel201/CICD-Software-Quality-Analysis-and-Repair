@@ -1,0 +1,22 @@
+services:
+  worker:
+    build:
+      context: ./app/worker
+    volumes:
+      - ./app/worker:/app
+      - .:/src
+    ports:
+      - "8002:8000"
+    env_file:
+      - .env
+    environment:
+      - WORKER_API_KEY=${WORKER_API_KEY:-default_secret_key}
+
+  # API placeholder
+  api:
+    build:
+      context: ./app/api
+    ports:
+      - "8001:8000"
+    environment:
+      - WORKER_URL=http://worker:8000
