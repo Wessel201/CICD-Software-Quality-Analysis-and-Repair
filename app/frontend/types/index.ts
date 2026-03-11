@@ -14,6 +14,22 @@ export type ApiJobStatus =
   | "DONE"
   | "FAILED";
 
+export interface Finding {
+  tool: string;
+  rule_id: string;
+  severity: "low" | "medium" | "high" | "critical";
+  category: string;
+  file: string;
+  line: number;
+  message: string;
+  suggestion: string;
+}
+
+export interface PatchInfo {
+  file: string;
+  diff_url: string;
+}
+
 export interface Job {
   job_id: string;
   status: JobStatus;
@@ -25,6 +41,9 @@ export interface JobResult {
   status: JobStatus;
   summary?: string;
   issues_found?: number;
+  findings_before?: Finding[];
+  findings_after?: Finding[];
+  patches?: PatchInfo[];
   artifacts?: { artifact_id: string; name: string }[];
   diffs?: FileDiff[];
 }

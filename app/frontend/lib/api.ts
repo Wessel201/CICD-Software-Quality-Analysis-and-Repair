@@ -87,6 +87,9 @@ export async function getJobResults(id: string): Promise<JobResult> {
     status: normalizeStatus(raw.status ?? "DONE"),
     summary: summaryText,
     issues_found: raw.summary?.before_total,
+    findings_before: raw.before,
+    findings_after: raw.after,
+    patches: raw.patches,
   };
   return results;
 }

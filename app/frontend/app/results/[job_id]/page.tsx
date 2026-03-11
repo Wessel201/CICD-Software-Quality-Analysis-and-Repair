@@ -1,7 +1,6 @@
 "use client";
 
 import { use, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { useRouter } from "next/navigation";
 import { JobStatusCard } from "../../../components/JobStatusCard";
 import { ResultsCard } from "../../../components/ResultsCard";
@@ -11,7 +10,6 @@ import {
   mockPollJobStatus,
   mockGetResults,
 } from "../../../lib/api";
-import { getDiffsForFiles } from "../../../mock";
 import type { JobResult, JobStatus } from "../../../types";
 
 type PageState = "polling" | "done" | "error";
@@ -22,9 +20,7 @@ interface Props {
 
 export default function ResultsPage({ params }: Props) {
   const { job_id } = use(params);
-  const searchParams = useSearchParams();
   const router = useRouter();
-  const filesParam = searchParams.get("files") ?? "*";
 
   const [pageState, setPageState] = useState<PageState>("polling");
   const [jobStatus, setJobStatus] = useState<JobStatus>("pending");
@@ -56,8 +52,6 @@ export default function ResultsPage({ params }: Props) {
           } catch {
             results = await mockGetResults(job_id);
           }
-          // Attach locally-computed diffs based on submitted files
-          results = { ...results, diffs: getDiffsForFiles(filesParam) };
           if (!cancelled) {
             setResult(results);
             setPageState("done");
@@ -85,7 +79,7 @@ export default function ResultsPage({ params }: Props) {
       cancelled = true;
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [job_id, filesParam]);
+  }, [job_id]);
 
   return (
     <div className="h-screen overflow-hidden flex flex-col bg-gradient-to-br from-slate-50 to-blue-100 dark:from-gray-900 dark:to-gray-800 transition-colors duration-300">
