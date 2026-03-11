@@ -53,8 +53,29 @@ next-env.d.ts
 
 # Terraform
 .terraform/
+/terraform/.terraform/
 .terraform.lock.hcl
 *.tfstate
 *.tfstate.*
+terraform.tfstate
+terraform.tfstate.backup
 .tfvars
 .tfvars.json
+
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python build artifacts
+*.egg-info/
+.eggs/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime artifacts
+*.db
+app/api/uploads/

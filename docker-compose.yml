@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: cq_postgres
+    environment:
+      POSTGRES_DB: quality_orchestrator
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d quality_orchestrator"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: cq_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./app/api
+      dockerfile: Dockerfile
+    container_name: cq_api
+    environment:
+      DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/quality_orchestrator
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      CELERY_TASK_ALWAYS_EAGER: "false"
+      AUTO_INIT_DB: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads_data:/code/uploads
+
+  worker:
+    build:
+      context: ./app/api
+      dockerfile: Dockerfile
+    container_name: cq_worker
+    command:
+      ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=info"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/quality_orchestrator
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      CELERY_TASK_ALWAYS_EAGER: "false"
+      AUTO_INIT_DB: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/code/uploads
+
+volumes:
+  postgres_data:
+  uploads_data:
