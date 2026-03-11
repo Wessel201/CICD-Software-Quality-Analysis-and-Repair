@@ -1,7 +1,7 @@
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse, Response
 
-from app.schemas.job import JobArtifactsResponse, JobCreateResponse, JobRepairRequest, JobResultsResponse, JobStatusResponse
+from app.schemas.job import JobArtifactsResponse, JobCreateResponse, JobListResponse, JobRepairRequest, JobResultsResponse, JobStatusResponse, SourceFileResponse
 from app.services.job_service import JobService
 from app.services.repository_service import RepositoryService
 from app.validators.job_validators import validate_job_source
@@ -10,6 +10,11 @@ from app.validators.job_validators import validate_job_source
 router = APIRouter()
 repository_service = RepositoryService()
 job_service = JobService()
+
+
+@router.get("", response_model=JobListResponse)
+def list_jobs(limit: int = Query(default=50, ge=1, le=100)) -> JobListResponse:
+    return job_service.list_recent_jobs(limit=limit)
 
 
 @router.post("", response_model=JobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -37,6 +42,7 @@ def create_job(
         source_type=source_type,
         source_reference=repository_id,
         auto_repair=auto_repair,
+        github_url=github_url if source_type == "github_url" else None,
     )
 
 
@@ -68,3 +74,30 @@ def download_job_artifact(job_id: str, artifact_id: int) -> FileResponse:
 @router.post("/{job_id}/repair", response_model=JobStatusResponse, status_code=status.HTTP_202_ACCEPTED)
 def repair_job(job_id: str, payload: JobRepairRequest) -> JobStatusResponse:
     return job_service.trigger_repair(job_id=job_id, repair_strategy=payload.repair_strategy)
+
+
+@router.delete("/{job_id}", status_code=204)
+def delete_job(job_id: str) -> None:
+    job_service.delete_job(job_id)
+
+
+@router.get("/{job_id}/source/archive")
+def download_source_archive(
+    job_id: str,
+    phase: str = Query(default="before", pattern="^(before|after)$"),
+) -> Response:
+    zip_bytes, filename = job_service.get_source_archive(job_id=job_id, phase=phase)
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
+    )
+
+
+@router.get("/{job_id}/source", response_model=SourceFileResponse)
+def get_job_source_file(
+    job_id: str,
+    file: str = Query(..., description="Absolute path to the source file (as returned in findings)"),
+    phase: str = Query(default="before", pattern="^(before|after)$"),
+) -> SourceFileResponse:
+    return job_service.get_source_file(job_id=job_id, file_path=file, phase=phase)

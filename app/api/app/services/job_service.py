@@ -11,8 +11,8 @@ from app.db.init_db import init_db
 from app.db.session import SessionLocal
 from app.repositories.job_repository import JobRepository
 from app.services.analyzer_runner import AnalyzerRunner
-from app.schemas.job import Finding, JobCreateResponse, JobResultsResponse, JobStatus, JobStatusResponse, JobSummary, PatchInfo
-from app.schemas.job import ArtifactInfo, JobArtifactsResponse
+from app.schemas.job import Finding, JobCreateResponse, JobListItem, JobListResponse, JobResultsResponse, JobStatus, JobStatusResponse, JobSummary, PatchInfo
+from app.schemas.job import ArtifactInfo, JobArtifactsResponse, SourceFileResponse
 
 
 class JobService:
@@ -31,14 +31,14 @@ class JobService:
     def __init__(self, analyzer_runner: AnalyzerRunner | None = None) -> None:
         self.analyzer_runner = analyzer_runner or AnalyzerRunner()
 
-    def create_job(self, source_type: str, source_reference: str, auto_repair: bool) -> JobCreateResponse:
+    def create_job(self, source_type: str, source_reference: str, auto_repair: bool, github_url: str | None = None) -> JobCreateResponse:
         job_id = f"job_{uuid4().hex[:12]}"
         created_at = None
 
         with self._lock:
             with SessionLocal() as session:
                 repository = JobRepository(session)
-                repository.upsert_repository(repository_id=source_reference, source_type=source_type)
+                repository.upsert_repository(repository_id=source_reference, source_type=source_type, github_url=github_url)
                 job = repository.create_job(job_id=job_id, repository_id=source_reference, auto_repair=auto_repair)
                 created_at = job.created_at
                 session.commit()
@@ -64,6 +64,58 @@ class JobService:
                 error=snapshot.error_message,
             )
 
+    def delete_job(self, job_id: str) -> None:
+        with self._lock:
+            with SessionLocal() as session:
+                repository = JobRepository(session)
+                repository.delete_job(job_id)
+                session.commit()
+
+    def list_recent_jobs(self, limit: int = 50) -> JobListResponse:
+        with SessionLocal() as session:
+            repository = JobRepository(session)
+            snapshots = repository.list_recent_jobs(limit=limit)
+
+        jobs: list[JobListItem] = []
+        for s in snapshots:
+            # For upload jobs, storage_key is the UUID — try to find the real filename on disk
+            label = s.source_label
+            if label and not label.startswith("http") and "/" not in label:
+                # Looks like a UUID storage_key; resolve filename from disk
+                upload_path = self.analyzer_runner.uploads_dir / label
+                if upload_path.is_dir():
+                    archive_files = [
+                        f.name for f in upload_path.iterdir()
+                        if f.is_file() and not f.name.startswith(".")
+                    ]
+                    if archive_files:
+                        label = archive_files[0]
+                    else:
+                        # May be a GitHub clone (UUID dir has source/ but no archive files).
+                        # Try to recover the repo name from the git remote config.
+                        git_config = upload_path / "source" / ".git" / "config"
+                        if git_config.exists():
+                            try:
+                                import configparser
+                                cfg = configparser.ConfigParser()
+                                cfg.read(git_config)
+                                git_url = cfg.get('remote "origin"', "url")
+                                parts = [p for p in git_url.rstrip("/").split("/") if p]
+                                if parts:
+                                    label = parts[-1].removesuffix(".git")
+                            except Exception:
+                                pass  # keep UUID as fallback
+            jobs.append(
+                JobListItem(
+                    job_id=s.job_id,
+                    status=JobStatus(s.status.value),
+                    created_at=s.created_at,
+                    finished_at=s.finished_at,
+                    source_label=label,
+                )
+            )
+        return JobListResponse(jobs=jobs)
+
     def get_job_results(self, job_id: str) -> JobResultsResponse:
         with SessionLocal() as session:
             repository = JobRepository(session)
@@ -75,9 +127,7 @@ class JobService:
             if not before:
                 raise HTTPException(status_code=409, detail="Analysis results are not available yet.")
 
-            if snapshot.status != JobStatusDb.DONE and not after:
-                raise HTTPException(status_code=409, detail="Repair results are not available yet.")
-
+            # Don't gate on 'after' — it's empty when repair hasn't run yet (READY_FOR_REPAIR)
             summary = self._build_summary(before, after)
             return JobResultsResponse(
                 job_id=job_id,
@@ -93,6 +143,30 @@ class JobService:
             snapshot = repository.get_job_snapshot(job_id)
             artifacts = repository.get_artifacts(job_id=job_id)
             return JobArtifactsResponse(job_id=snapshot.job_id, artifacts=artifacts)
+
+    def get_source_file(self, job_id: str, file_path: str, phase: str = "before") -> SourceFileResponse:
+        with SessionLocal() as session:
+            repository = JobRepository(session)
+            job_context = repository.get_job_context(job_id)
+        lines = self.analyzer_runner.read_source_file(
+            repository_id=job_context.repository_id,
+            source_type=job_context.source_type,
+            file_path=file_path,
+            phase=phase,
+        )
+        return SourceFileResponse(file=file_path, lines=lines, total=len(lines))
+
+    def get_source_archive(self, job_id: str, phase: str = "before") -> tuple[bytes, str]:
+        with SessionLocal() as session:
+            repository = JobRepository(session)
+            job_context = repository.get_job_context(job_id)
+        zip_bytes = self.analyzer_runner.build_source_archive(
+            repository_id=job_context.repository_id,
+            source_type=job_context.source_type,
+            phase=phase,
+        )
+        filename = f"{job_id}_{phase}_source.zip"
+        return zip_bytes, filename
 
     def get_job_artifact_download(self, job_id: str, artifact_id: int) -> tuple[Path, str | None]:
         with SessionLocal() as session:

@@ -25,6 +25,9 @@ class Finding(BaseModel):
     line: int
     message: str
     suggestion: str
+    # Lines of source code surrounding the finding (populated at analysis time)
+    snippet: list[str] = []
+    snippet_start: int = 0  # 1-based line number of snippet[0]
 
 
 class JobSummary(BaseModel):
@@ -78,9 +81,26 @@ class JobRepairRequest(BaseModel):
 
 class ErrorBody(BaseModel):
     code: str
-    message: str
+    message: str = ""
     details: dict[str, str] = Field(default_factory=dict)
 
+
+class SourceFileResponse(BaseModel):
+    file: str
+    lines: list[str]
+    total: int
+
+class JobListItem(BaseModel):
+    job_id: str
+    status: JobStatus
+    created_at: datetime
+    finished_at: datetime | None = None
+    source_label: str | None = None
+    """Human-readable source name: repo name for GitHub URLs, filename for uploads."""
+
+
+class JobListResponse(BaseModel):
+    jobs: list[JobListItem]
 
 class ErrorResponse(BaseModel):
     error: ErrorBody

@@ -19,8 +19,6 @@ services:
   redis:
     image: redis:7
     container_name: cq_redis
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -38,6 +36,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       CELERY_TASK_ALWAYS_EAGER: "false"
       AUTO_INIT_DB: "true"
+      WORKER_URL: http://worker-llm:8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,6 +67,19 @@ services:
         condition: service_healthy
     volumes:
       - uploads_data:/code/uploads
+
+  worker-llm:
+    build:
+      context: ./app/worker
+    container_name: cq_worker_llm
+    volumes:
+      - uploads_data:/uploads
+    ports:
+      - "8002:8000"
+    env_file:
+      - .env
+    environment:
+      - WORKER_API_KEY=${WORKER_API_KEY:-default_secret_key}
 
 volumes:
   postgres_data:
