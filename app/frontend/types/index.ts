@@ -1,6 +1,18 @@
 import type { FileDiff } from "../components/DiffViewer";
 
+// Statuses used internally by the frontend (normalised)
 export type JobStatus = "pending" | "running" | "completed" | "failed";
+
+// All status strings the real API can return
+export type ApiJobStatus =
+  | "QUEUED"
+  | "FETCHING"
+  | "ANALYZING"
+  | "READY_FOR_REPAIR"
+  | "REPAIRING"
+  | "REANALYZING"
+  | "DONE"
+  | "FAILED";
 
 export interface Job {
   job_id: string;

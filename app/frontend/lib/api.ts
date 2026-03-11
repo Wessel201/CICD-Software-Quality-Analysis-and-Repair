@@ -1,7 +1,30 @@
-import type { Job, JobResult } from "../types";
+import type { Job, JobResult, ApiJobStatus } from "../types";
 import { MOCK_DIFFS } from "../mock";
 
 export const API_BASE = "http://localhost:8000";
+
+// ── Status normalisation ──────────────────────────────────────────────────────
+// Maps the API's multi-step uppercase statuses to the four frontend states.
+
+function normalizeStatus(raw: string): Job["status"] {
+  switch (raw as ApiJobStatus) {
+    case "DONE":
+      return "completed";
+    case "FAILED":
+      return "failed";
+    case "QUEUED":
+      return "pending";
+    case "FETCHING":
+    case "ANALYZING":
+    case "READY_FOR_REPAIR":
+    case "REPAIRING":
+    case "REANALYZING":
+      return "running";
+    default:
+      // Already a normalised value (mock path) — pass through
+      return raw as Job["status"];
+  }
+}
 
 // ── Real API ──────────────────────────────────────────────────────────────────
 
@@ -9,42 +32,38 @@ export async function createJob(
   file: File | null,
   githubUrl: string,
 ): Promise<Job> {
+  const form = new FormData();
   if (file) {
-    const form = new FormData();
     form.append("file", file);
     console.log("[API] POST /api/v1/jobs", {
       type: "file",
       fileName: file.name,
       size: file.size,
     });
-    const res = await fetch(`${API_BASE}/api/v1/jobs`, {
-      method: "POST",
-      body: form,
-    });
-    if (!res.ok) throw new Error(`Server error ${res.status}`);
-    const job: Job = await res.json();
-    console.log("[API] POST /api/v1/jobs → response", job);
-    return job;
   } else {
-    const payload = { source_type: "github", github_url: githubUrl };
-    console.log("[API] POST /api/v1/jobs", payload);
-    const res = await fetch(`${API_BASE}/api/v1/jobs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+    form.append("github_url", githubUrl);
+    console.log("[API] POST /api/v1/jobs", {
+      type: "github",
+      github_url: githubUrl,
     });
-    if (!res.ok) throw new Error(`Server error ${res.status}`);
-    const job: Job = await res.json();
-    console.log("[API] POST /api/v1/jobs → response", job);
-    return job;
   }
+  const res = await fetch(`${API_BASE}/api/v1/jobs`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) throw new Error(`Server error ${res.status}`);
+  const raw = await res.json();
+  const job: Job = { ...raw, status: normalizeStatus(raw.status) };
+  console.log("[API] POST /api/v1/jobs → response", job);
+  return job;
 }
 
 export async function pollJobStatus(id: string, attempt: number): Promise<Job> {
   console.log(`[API] GET /api/v1/jobs/${id}`, { attempt });
   const res = await fetch(`${API_BASE}/api/v1/jobs/${id}`);
   if (!res.ok) throw new Error(`Server error ${res.status}`);
-  const job: Job = await res.json();
+  const raw = await res.json();
+  const job: Job = { ...raw, status: normalizeStatus(raw.status) };
   console.log(`[API] GET /api/v1/jobs/${id} → response`, job);
   return job;
 }
@@ -53,8 +72,22 @@ export async function getJobResults(id: string): Promise<JobResult> {
   console.log(`[API] GET /api/v1/jobs/${id}/results`);
   const res = await fetch(`${API_BASE}/api/v1/jobs/${id}/results`);
   if (!res.ok) throw new Error(`Server error ${res.status}`);
-  const results: JobResult = await res.json();
-  console.log(`[API] GET /api/v1/jobs/${id}/results → response`, results);
+  const raw = await res.json();
+  console.log(`[API] GET /api/v1/jobs/${id}/results → response`, raw);
+
+  // Map the real API shape to the frontend JobResult shape:
+  // raw.summary = { before_total, after_total, reduction_pct }
+  // raw.before / raw.after = Finding[]
+  const summaryText = raw.summary
+    ? `${raw.summary.before_total} issues found, reduced to ${raw.summary.after_total} (${raw.summary.reduction_pct.toFixed(1)}% reduction)`
+    : undefined;
+
+  const results: JobResult = {
+    job_id: raw.job_id,
+    status: normalizeStatus(raw.status ?? "DONE"),
+    summary: summaryText,
+    issues_found: raw.summary?.before_total,
+  };
   return results;
 }
 
