@@ -25,6 +25,9 @@ class Finding(BaseModel):
     line: int
     message: str
     suggestion: str
+    # Lines of source code surrounding the finding (populated at analysis time)
+    snippet: list[str] = []
+    snippet_start: int = 0  # 1-based line number of snippet[0]
 
 
 class JobSummary(BaseModel):
@@ -78,8 +81,12 @@ class JobRepairRequest(BaseModel):
 
 class ErrorBody(BaseModel):
     code: str
-    message: str
-    details: dict[str, str] = Field(default_factory=dict)
+
+
+class SourceFileResponse(BaseModel):
+    file: str
+    lines: list[str]
+    total: int
 
 
 class ErrorResponse(BaseModel):

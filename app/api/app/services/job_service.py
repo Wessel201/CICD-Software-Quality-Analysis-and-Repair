@@ -12,7 +12,7 @@ from app.db.session import SessionLocal
 from app.repositories.job_repository import JobRepository
 from app.services.analyzer_runner import AnalyzerRunner
 from app.schemas.job import Finding, JobCreateResponse, JobResultsResponse, JobStatus, JobStatusResponse, JobSummary, PatchInfo
-from app.schemas.job import ArtifactInfo, JobArtifactsResponse
+from app.schemas.job import ArtifactInfo, JobArtifactsResponse, SourceFileResponse
 
 
 class JobService:
@@ -93,6 +93,17 @@ class JobService:
             snapshot = repository.get_job_snapshot(job_id)
             artifacts = repository.get_artifacts(job_id=job_id)
             return JobArtifactsResponse(job_id=snapshot.job_id, artifacts=artifacts)
+
+    def get_source_file(self, job_id: str, file_path: str) -> SourceFileResponse:
+        with SessionLocal() as session:
+            repository = JobRepository(session)
+            job_context = repository.get_job_context(job_id)
+        lines = self.analyzer_runner.read_source_file(
+            repository_id=job_context.repository_id,
+            source_type=job_context.source_type,
+            file_path=file_path,
+        )
+        return SourceFileResponse(file=file_path, lines=lines, total=len(lines))
 
     def get_job_artifact_download(self, job_id: str, artifact_id: int) -> tuple[Path, str | None]:
         with SessionLocal() as session:

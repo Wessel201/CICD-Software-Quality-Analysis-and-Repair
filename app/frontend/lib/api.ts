@@ -94,6 +94,16 @@ export async function getJobResults(id: string): Promise<JobResult> {
   return results;
 }
 
+export async function getJobSourceFile(
+  jobId: string,
+  filePath: string,
+): Promise<{ lines: string[]; total: number }> {
+  const url = `${API_BASE}/api/v1/jobs/${jobId}/source?file=${encodeURIComponent(filePath)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Server error ${res.status}`);
+  return res.json();
+}
+
 // ── Mock fallback (used when API is unreachable) ───────────────────────────────
 
 export function mockCreateJob(): Promise<Job> {

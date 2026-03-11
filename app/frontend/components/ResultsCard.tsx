@@ -1,16 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { DiffViewer, diffStats } from "./DiffViewer";
 import type { Finding, JobResult } from "../types";
 import { downloadModifiedFile, downloadAllAsZip } from "../lib/download";
 import { FindingDetailPanel } from "./FindingDetailPanel";
 import { FindingsTable } from "./FindingsTable";
+import { FileMapView } from "./FileMapView";
 
 const PAGE_SIZE = 5;
 
-type Tab = "summary" | "detail" | "changes";
+type Tab = "summary" | "detail" | "filemap" | "changes";
 
 interface ResultsCardProps {
   result: JobResult;
@@ -20,12 +21,27 @@ export function ResultsCard({ result }: ResultsCardProps) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>("summary");
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
+  // Accordion: which file path is currently expanded in File View
+  const [expandedFilePath, setExpandedFilePath] = useState<string | null>(null);
 
   const findings = result.findings_before ?? [];
   const afterFindings = result.findings_after ?? [];
   const diffs = result.diffs ?? [];
   const hasFindings = findings.length > 0;
   const hasDiffs = diffs.length > 0;
+
+  // Unique files sorted by finding count desc
+  const uniqueFiles = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const f of findings) counts.set(f.file, (counts.get(f.file) ?? 0) + 1);
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([path, count]) => ({
+        path,
+        count,
+        display: path.split("/").pop() ?? path,
+      }));
+  }, [findings]);
 
   const isFixed = (f: Finding) =>
     !afterFindings.some(
@@ -101,6 +117,16 @@ export function ResultsCard({ result }: ResultsCardProps) {
           </button>
         )}
 
+        {hasFindings && (
+          <button
+            type="button"
+            onClick={() => setActiveTab("filemap")}
+            className={tabClass("filemap")}
+          >
+            File View
+          </button>
+        )}
+
         {hasDiffs && (
           <button
             type="button"
@@ -138,43 +164,14 @@ export function ResultsCard({ result }: ResultsCardProps) {
       {activeTab === "detail" && (
         <div className="flex flex-col gap-3">
           {selectedFinding ? (
-            <>
-              <FindingDetailPanel
-                finding={selectedFinding}
-                isFixed={isFixed(selectedFinding)}
-                onClose={() => setActiveTab("summary")}
-              />
-              <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const idx = findings.indexOf(selectedFinding);
-                    if (idx > 0) setSelectedFinding(findings[idx - 1]);
-                  }}
-                  disabled={findings.indexOf(selectedFinding) === 0}
-                  className="px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  ← Previous finding
-                </button>
-                <span>
-                  {findings.indexOf(selectedFinding) + 1} / {findings.length}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const idx = findings.indexOf(selectedFinding);
-                    if (idx < findings.length - 1)
-                      setSelectedFinding(findings[idx + 1]);
-                  }}
-                  disabled={
-                    findings.indexOf(selectedFinding) === findings.length - 1
-                  }
-                  className="px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  Next finding →
-                </button>
-              </div>
-            </>
+            <FindingDetailPanel
+              finding={selectedFinding}
+              displayFile={
+                selectedFinding.file.split("/").pop() ?? selectedFinding.file
+              }
+              isFixed={isFixed(selectedFinding)}
+              onClose={() => setActiveTab("summary")}
+            />
           ) : (
             <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-6">
               Click a row in the Summary tab to inspect a finding.
@@ -185,6 +182,92 @@ export function ResultsCard({ result }: ResultsCardProps) {
 
       {/* ── Changes tab ── */}
       {activeTab === "changes" && hasDiffs && <DiffViewer diffs={diffs} />}
+
+      {/* ── File map tab ── */}
+      {activeTab === "filemap" && hasFindings && (
+        <div className="flex flex-col gap-0 divide-y divide-gray-200 dark:divide-gray-700 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+          {uniqueFiles.map(({ path, count, display }) => {
+            const fileFindings = findings.filter((f) => f.file === path);
+            const isOpen = expandedFilePath === path;
+
+            // Severity breakdown for this file
+            const sevCounts = fileFindings.reduce<Record<string, number>>(
+              (acc, f) => ({
+                ...acc,
+                [f.severity]: (acc[f.severity] ?? 0) + 1,
+              }),
+              {},
+            );
+            const SEV_COLOUR: Record<string, string> = {
+              critical: "#ef4444",
+              high: "#f97316",
+              medium: "#eab308",
+              low: "#3b82f6",
+            };
+
+            return (
+              <div key={path}>
+                {/* File header — always visible */}
+                <button
+                  type="button"
+                  onClick={() => setExpandedFilePath(isOpen ? null : path)}
+                  className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors text-left"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <svg
+                      className={`w-3.5 h-3.5 shrink-0 text-gray-400 transition-transform ${
+                        isOpen ? "rotate-90" : ""
+                      }`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2.5}
+                        d="M9 5l7 7-7 7"
+                      />
+                    </svg>
+                    <span className="font-mono font-semibold text-sm text-gray-800 dark:text-gray-100 truncate">
+                      {display}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 ml-4">
+                    {(["critical", "high", "medium", "low"] as const)
+                      .filter((s) => sevCounts[s])
+                      .map((s) => (
+                        <span
+                          key={s}
+                          className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+                          style={{
+                            background: `${SEV_COLOUR[s]}22`,
+                            color: SEV_COLOUR[s],
+                            border: `1px solid ${SEV_COLOUR[s]}44`,
+                          }}
+                        >
+                          {sevCounts[s]} {s}
+                        </span>
+                      ))}
+                    <span className="text-xs text-gray-400">{count}</span>
+                  </div>
+                </button>
+
+                {/* Expanded file map */}
+                {isOpen && (
+                  <div className="border-t border-gray-200 dark:border-gray-700">
+                    <FileMapView
+                      jobId={result.job_id}
+                      filePath={path}
+                      findings={fileFindings}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <button
         onClick={() => router.push("/")}

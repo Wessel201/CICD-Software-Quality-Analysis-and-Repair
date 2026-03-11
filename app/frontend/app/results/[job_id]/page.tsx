@@ -4,6 +4,7 @@ import { use, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { JobStatusCard } from "../../../components/JobStatusCard";
 import { ResultsCard } from "../../../components/ResultsCard";
+import { NavBar } from "../../../components/NavBar";
 import {
   pollJobStatus,
   getJobResults,
@@ -81,21 +82,16 @@ export default function ResultsPage({ params }: Props) {
     };
   }, [job_id]);
 
+  const subtitle =
+    pageState === "polling"
+      ? "Processing your project…"
+      : pageState === "done"
+        ? "Analysis results ready."
+        : "Something went wrong.";
+
   return (
     <div className="h-screen overflow-hidden flex flex-col bg-gradient-to-br from-slate-50 to-blue-100 dark:from-gray-900 dark:to-gray-800 transition-colors duration-300">
-      {/* Fixed header */}
-      <div className="flex-shrink-0 text-center py-6 px-4">
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-          Analysis Results
-        </h1>
-        <p className="text-gray-600 dark:text-gray-300 mt-1 text-sm">
-          {pageState === "polling"
-            ? "Processing your project…"
-            : pageState === "done"
-              ? "Your analysis is ready."
-              : "Something went wrong."}
-        </p>
-      </div>
+      <NavBar subtitle={subtitle} />
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto px-4 pb-8">

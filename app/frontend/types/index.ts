@@ -23,6 +23,10 @@ export interface Finding {
   line: number;
   message: string;
   suggestion: string;
+  /** Source code lines around the finding, populated by the backend */
+  snippet?: string[];
+  /** 1-based line number of snippet[0] */
+  snippet_start?: number;
 }
 
 export interface PatchInfo {

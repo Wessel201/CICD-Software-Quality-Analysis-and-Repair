@@ -92,16 +92,21 @@ class AnalyzerRunner:
 
         findings: list[Finding] = []
         for issue in issues:
+            file_path = str(issue.get("filename", ""))
+            line_no = int(issue.get("line_number", 0) or 0)
+            snippet, snippet_start = self._extract_snippet(file_path, line_no)
             findings.append(
                 Finding(
                     tool="bandit",
                     rule_id=str(issue.get("test_id", "BANDIT")),
                     severity=self._normalize_severity(str(issue.get("issue_severity", "medium"))),
                     category="security",
-                    file=str(issue.get("filename", "")),
-                    line=int(issue.get("line_number", 0) or 0),
+                    file=file_path,
+                    line=line_no,
                     message=str(issue.get("issue_text", "Security issue detected.")),
                     suggestion="Review and remediate the reported security issue.",
+                    snippet=snippet,
+                    snippet_start=snippet_start,
                 )
             )
         return findings, payload
@@ -119,16 +124,21 @@ class AnalyzerRunner:
 
         for issue in payload:
             location = issue.get("location", {}) if isinstance(issue, dict) else {}
+            file_path = str(issue.get("filename", ""))
+            line_no = int(location.get("row", 0) or 0)
+            snippet, snippet_start = self._extract_snippet(file_path, line_no)
             findings.append(
                 Finding(
                     tool="ruff",
                     rule_id=str(issue.get("code", "RUFF")),
                     severity="low",
                     category="code_smell",
-                    file=str(issue.get("filename", "")),
-                    line=int(location.get("row", 0) or 0),
+                    file=file_path,
+                    line=line_no,
                     message=str(issue.get("message", "Ruff issue detected.")),
                     suggestion="Apply lint recommendation for cleaner code.",
+                    snippet=snippet,
+                    snippet_start=snippet_start,
                 )
             )
         return findings, payload
@@ -151,6 +161,8 @@ class AnalyzerRunner:
                 continue
             for entry in entries:
                 complexity = int(entry.get("complexity", 0) or 0)
+                line_no = int(entry.get("lineno", 0) or 0)
+                snippet, snippet_start = self._extract_snippet(file_path, line_no)
                 findings.append(
                     Finding(
                         tool="radon",
@@ -158,9 +170,11 @@ class AnalyzerRunner:
                         severity=self._severity_from_complexity(complexity),
                         category="complexity",
                         file=str(file_path),
-                        line=int(entry.get("lineno", 0) or 0),
+                        line=line_no,
                         message=f"Cyclomatic complexity is {complexity} for {entry.get('name', 'block')}.",
                         suggestion="Split logic into smaller functions.",
+                        snippet=snippet,
+                        snippet_start=snippet_start,
                     )
                 )
         return findings, payload
@@ -191,20 +205,68 @@ class AnalyzerRunner:
             source_data = source_metadata.get("Data", {}) if isinstance(source_metadata, dict) else {}
             filesystem_info = source_data.get("Filesystem", {}) if isinstance(source_data, dict) else {}
 
+            file_path = str(filesystem_info.get("file", ""))
+            line_no = int(filesystem_info.get("line", 0) or 0)
+            snippet, snippet_start = self._extract_snippet(file_path, line_no)
             findings.append(
                 Finding(
                     tool="trufflehog",
                     rule_id=str(payload.get("DetectorName", "TRUFFLEHOG")),
                     severity="critical",
                     category="secrets",
-                    file=str(filesystem_info.get("file", "")),
-                    line=int(filesystem_info.get("line", 0) or 0),
+                    file=file_path,
+                    line=line_no,
                     message="Potential secret detected by TruffleHog.",
                     suggestion="Rotate and remove exposed secret material.",
+                    snippet=snippet,
+                    snippet_start=snippet_start,
                 )
             )
 
         return findings, raw_results
+
+    def read_source_file(self, repository_id: str, source_type: str, file_path: str) -> list[str]:
+        """Return all lines of a source file, validating the path stays within the job's source directory."""
+        source_directory = self._resolve_source_directory(
+            repository_id=repository_id, source_type=source_type, phase="before"
+        ).resolve()
+
+        requested = Path(file_path).resolve()
+
+        # Security: prevent path traversal — file must be inside the source directory
+        try:
+            requested.relative_to(source_directory)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="File path is outside the job source directory.") from exc
+
+        if not requested.is_file():
+            raise HTTPException(status_code=404, detail="Source file not found.")
+
+        try:
+            return requested.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to read source file.") from exc
+
+    @staticmethod
+    def _extract_snippet(file_path: str, line: int, context: int = 3) -> tuple[list[str], int]:
+        """Read `context` lines before and after `line` from the file.
+        Returns (lines, start_line) where start_line is 1-based.
+        Returns ([], 0) if the file cannot be read.
+        """
+        try:
+            path = Path(file_path)
+            if not path.is_file():
+                return [], 0
+            all_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return [], 0
+
+        total = len(all_lines)
+        # Convert 1-based `line` to 0-based index
+        idx = max(0, line - 1)
+        start_idx = max(0, idx - context)
+        end_idx = min(total, idx + context + 1)
+        return all_lines[start_idx:end_idx], start_idx + 1  # return 1-based start
 
     @staticmethod
     def _execute_command(command: list[str]) -> subprocess.CompletedProcess[str] | None:

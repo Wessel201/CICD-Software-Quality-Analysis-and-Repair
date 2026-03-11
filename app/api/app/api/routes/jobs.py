@@ -1,7 +1,7 @@
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 
-from app.schemas.job import JobArtifactsResponse, JobCreateResponse, JobRepairRequest, JobResultsResponse, JobStatusResponse
+from app.schemas.job import JobArtifactsResponse, JobCreateResponse, JobRepairRequest, JobResultsResponse, JobStatusResponse, SourceFileResponse
 from app.services.job_service import JobService
 from app.services.repository_service import RepositoryService
 from app.validators.job_validators import validate_job_source
@@ -68,3 +68,11 @@ def download_job_artifact(job_id: str, artifact_id: int) -> FileResponse:
 @router.post("/{job_id}/repair", response_model=JobStatusResponse, status_code=status.HTTP_202_ACCEPTED)
 def repair_job(job_id: str, payload: JobRepairRequest) -> JobStatusResponse:
     return job_service.trigger_repair(job_id=job_id, repair_strategy=payload.repair_strategy)
+
+
+@router.get("/{job_id}/source", response_model=SourceFileResponse)
+def get_job_source_file(
+    job_id: str,
+    file: str = Query(..., description="Absolute path to the source file (as returned in findings)"),
+) -> SourceFileResponse:
+    return job_service.get_source_file(job_id=job_id, file_path=file)
