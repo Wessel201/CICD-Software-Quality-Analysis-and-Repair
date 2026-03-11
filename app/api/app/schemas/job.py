@@ -88,6 +88,17 @@ class SourceFileResponse(BaseModel):
     lines: list[str]
     total: int
 
+class JobListItem(BaseModel):
+    job_id: str
+    status: JobStatus
+    created_at: datetime
+    finished_at: datetime | None = None
+    source_label: str | None = None
+    """Human-readable source name: repo name for GitHub URLs, filename for uploads."""
+
+
+class JobListResponse(BaseModel):
+    jobs: list[JobListItem]
 
 class ErrorResponse(BaseModel):
     error: ErrorBody

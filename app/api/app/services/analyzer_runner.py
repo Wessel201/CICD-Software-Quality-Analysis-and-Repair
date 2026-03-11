@@ -225,10 +225,10 @@ class AnalyzerRunner:
 
         return findings, raw_results
 
-    def read_source_file(self, repository_id: str, source_type: str, file_path: str) -> list[str]:
+    def read_source_file(self, repository_id: str, source_type: str, file_path: str, phase: str = "before") -> list[str]:
         """Return all lines of a source file, validating the path stays within the job's source directory."""
         source_directory = self._resolve_source_directory(
-            repository_id=repository_id, source_type=source_type, phase="before"
+            repository_id=repository_id, source_type=source_type, phase=phase
         ).resolve()
 
         requested = Path(file_path).resolve()
@@ -246,6 +246,23 @@ class AnalyzerRunner:
             return requested.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Failed to read source file.") from exc
+
+    def build_source_archive(self, repository_id: str, source_type: str, phase: str = "before") -> bytes:
+        """Zip all Python files in the source directory and return the zip bytes."""
+        import zipfile
+        import io
+        source_dir = self._resolve_source_directory(
+            repository_id=repository_id, source_type=source_type, phase=phase
+        ).resolve()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in sorted(source_dir.rglob("*.py")):
+                if path.is_file():
+                    try:
+                        zf.write(path, path.relative_to(source_dir))
+                    except ValueError:
+                        pass
+        return buf.getvalue()
 
     @staticmethod
     def _extract_snippet(file_path: str, line: int, context: int = 3) -> tuple[list[str], int]:

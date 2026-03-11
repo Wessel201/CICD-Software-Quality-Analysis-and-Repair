@@ -1,6 +1,13 @@
 ﻿"use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { Finding } from "../types";
 import { getJobSourceFile } from "../lib/api";
 
@@ -157,7 +164,7 @@ export function FileMapView({ jobId, filePath, findings }: Props) {
       {!isLoading && lines && (
         /* Fixed-height flex row so minimap matches code-pane height exactly */
         <div
-          className="flex h-[52vh] rounded-b-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
+          className="flex rounded-b-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
           style={{
             fontFamily:
               "'JetBrains Mono','Fira Code','Cascadia Code',ui-monospace,monospace",
@@ -167,7 +174,7 @@ export function FileMapView({ jobId, filePath, findings }: Props) {
           <div
             ref={codeRef}
             onScroll={syncThumb}
-            className="flex-1 overflow-auto h-full"
+            className="flex-1 overflow-y-auto max-h-[52vh] hide-scrollbar"
           >
             <table className="w-full border-collapse">
               <colgroup>
@@ -191,7 +198,7 @@ export function FileMapView({ jobId, filePath, findings }: Props) {
                       : undefined;
 
                   return (
-                    <>
+                    <Fragment key={lineNo}>
                       {/* â”€â”€ Source line â”€â”€ */}
                       <tr
                         key={`l-${lineNo}`}
@@ -221,7 +228,7 @@ export function FileMapView({ jobId, filePath, findings }: Props) {
                       {/* â”€â”€ Inline diff rows (shown when expanded) â”€â”€ */}
                       {isExpanded &&
                         lineFindings!.map((f, fi) => (
-                          <>
+                          <Fragment key={`f-${lineNo}-${fi}`}>
                             {/* Annotation bar */}
                             <tr
                               key={`ann-${lineNo}-${fi}`}
@@ -272,9 +279,9 @@ export function FileMapView({ jobId, filePath, findings }: Props) {
                                   </td>
                                 </tr>
                               ))}
-                          </>
+                          </Fragment>
                         ))}
-                    </>
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -285,7 +292,7 @@ export function FileMapView({ jobId, filePath, findings }: Props) {
           <div
             ref={minimapRef}
             onClick={handleMinimapClick}
-            className="relative w-10 h-full shrink-0 bg-gray-50 dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700 cursor-pointer overflow-hidden"
+            className="relative w-10 shrink-0 bg-gray-50 dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700 cursor-pointer overflow-hidden"
             title="Click to jump"
             style={
               {

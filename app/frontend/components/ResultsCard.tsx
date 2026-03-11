@@ -2,46 +2,109 @@
 
 import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { DiffViewer, diffStats } from "./DiffViewer";
-import type { Finding, JobResult } from "../types";
-import { downloadModifiedFile, downloadAllAsZip } from "../lib/download";
+import type { Finding, JobResult, JobStatus } from "../types";
+import { deleteJob, getJobSourceFile, sourceArchiveUrl } from "../lib/api";
 import { FindingDetailPanel } from "./FindingDetailPanel";
 import { FindingsTable } from "./FindingsTable";
 import { FileMapView } from "./FileMapView";
 
 const PAGE_SIZE = 5;
 
-type Tab = "summary" | "detail" | "filemap" | "changes";
+/** Normalise file paths so tools that prefix with './' or use different separators
+ *  don't create duplicate accordion entries for the same physical file. */
+function normPath(p: string) {
+  return p.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+type Tab = "summary" | "detail" | "filemap";
 
 interface ResultsCardProps {
   result: JobResult;
+  jobStatus: JobStatus;
+  onRepair?: () => void;
 }
 
-export function ResultsCard({ result }: ResultsCardProps) {
+export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>("summary");
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
   // Accordion: which file path is currently expanded in File View
   const [expandedFilePath, setExpandedFilePath] = useState<string | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [llmFileState, setLlmFileState] = useState<
+    Record<string, "idle" | "sending" | "done">
+  >({});
+  const [llmArchiveState, setLlmArchiveState] = useState<
+    "idle" | "sending" | "done"
+  >("idle");
 
   const findings = result.findings_before ?? [];
   const afterFindings = result.findings_after ?? [];
-  const diffs = result.diffs ?? [];
   const hasFindings = findings.length > 0;
-  const hasDiffs = diffs.length > 0;
+  const hasRepaired = afterFindings.length > 0;
+  const anyFileLlmDone = Object.values(llmFileState).some((s) => s === "done");
 
-  // Unique files sorted by finding count desc
+  // Unique files sorted by finding count desc.
+  // Two findings with different full paths but the same basename are merged
+  // (handles cases where the analyser scans both original/ and modified/ trees).
   const uniqueFiles = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const f of findings) counts.set(f.file, (counts.get(f.file) ?? 0) + 1);
-    return Array.from(counts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([path, count]) => ({
-        path,
+    const groups = new Map<string, { originalPath: string; count: number }>();
+    for (const f of findings) {
+      // Key by the final filename component so e.g. original/utils.py and
+      // modified/utils.py merge into a single entry.
+      const key = normPath(f.file).split("/").pop()!.toLowerCase();
+      const g = groups.get(key);
+      if (g) g.count++;
+      else groups.set(key, { originalPath: f.file, count: 1 });
+    }
+    return Array.from(groups.entries())
+      .sort((a, b) => b[1].count - a[1].count)
+      .map(([basename, { originalPath, count }]) => ({
+        basename,
+        originalPath,
         count,
-        display: path.split("/").pop() ?? path,
+        display:
+          originalPath.split("/").pop()?.split("\\").pop() ?? originalPath,
       }));
   }, [findings]);
+
+  async function handleDownloadFile(
+    filePath: string,
+    phase: "before" | "after",
+  ) {
+    const filename = filePath.split("/").pop() ?? filePath;
+    try {
+      const data = await getJobSourceFile(result.job_id, filePath, phase);
+      const blob = new Blob([data.lines.join("\n")], { type: "text/plain" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = (phase === "after" ? "modified_" : "") + filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch {
+      // silently ignore
+    }
+  }
+
+  async function handleSendAllToLlm() {
+    setLlmArchiveState("sending");
+    console.log(`[LLM] Sending all files to LLM for job: ${result.job_id}`);
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    console.log(`[LLM] All files received by LLM for job: ${result.job_id}`);
+    const allDone: Record<string, "done"> = {};
+    for (const { basename } of uniqueFiles) allDone[basename] = "done";
+    setLlmFileState((prev) => ({ ...prev, ...allDone }));
+    setLlmArchiveState("done");
+  }
+
+  async function handleSendToLlm(basename: string, filePath: string) {
+    setLlmFileState((prev) => ({ ...prev, [basename]: "sending" }));
+    console.log(`[LLM] Sending file to LLM: ${filePath}`);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    console.log(`[LLM] File received by LLM: ${filePath}`);
+    setLlmFileState((prev) => ({ ...prev, [basename]: "done" }));
+  }
 
   const isFixed = (f: Finding) =>
     !afterFindings.some(
@@ -83,7 +146,9 @@ export function ResultsCard({ result }: ResultsCardProps) {
         </svg>
         <div>
           <p className="font-semibold text-gray-800 dark:text-white">
-            Analysis Complete
+            {jobStatus === "completed"
+              ? "Analysis & Repair Complete"
+              : "Analysis Complete"}
           </p>
           <p className="text-xs text-gray-400 font-mono">Job {result.job_id}</p>
         </div>
@@ -107,19 +172,6 @@ export function ResultsCard({ result }: ResultsCardProps) {
         {hasFindings && (
           <button
             type="button"
-            onClick={() => setActiveTab("detail")}
-            className={tabClass("detail")}
-          >
-            Detail
-            {selectedFinding && (
-              <span className="ml-1.5 inline-block w-2 h-2 rounded-full bg-indigo-500" />
-            )}
-          </button>
-        )}
-
-        {hasFindings && (
-          <button
-            type="button"
             onClick={() => setActiveTab("filemap")}
             className={tabClass("filemap")}
           >
@@ -127,16 +179,13 @@ export function ResultsCard({ result }: ResultsCardProps) {
           </button>
         )}
 
-        {hasDiffs && (
+        {hasFindings && (
           <button
             type="button"
-            onClick={() => setActiveTab("changes")}
-            className={tabClass("changes")}
+            onClick={() => setActiveTab("detail")}
+            className={tabClass("detail")}
           >
-            Changes
-            <span className="ml-1.5 text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded-full px-1.5 py-0.5">
-              {diffs.length}
-            </span>
+            Detail
           </button>
         )}
       </div>
@@ -150,11 +199,9 @@ export function ResultsCard({ result }: ResultsCardProps) {
               selectedFinding={selectedFinding}
               onSelect={handleSelectFinding}
             />
-          ) : hasDiffs ? (
-            <MockDiffSummary diffs={diffs} />
           ) : (
             <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-6">
-              No findings to display.
+              No issues found.
             </p>
           )}
         </>
@@ -180,240 +227,148 @@ export function ResultsCard({ result }: ResultsCardProps) {
         </div>
       )}
 
-      {/* ── Changes tab ── */}
-      {activeTab === "changes" && hasDiffs && <DiffViewer diffs={diffs} />}
-
       {/* ── File map tab ── */}
       {activeTab === "filemap" && hasFindings && (
-        <div className="flex flex-col gap-0 divide-y divide-gray-200 dark:divide-gray-700 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-          {uniqueFiles.map(({ path, count, display }) => {
-            const fileFindings = findings.filter((f) => f.file === path);
-            const isOpen = expandedFilePath === path;
-
-            // Severity breakdown for this file
-            const sevCounts = fileFindings.reduce<Record<string, number>>(
-              (acc, f) => ({
-                ...acc,
-                [f.severity]: (acc[f.severity] ?? 0) + 1,
-              }),
-              {},
-            );
-            const SEV_COLOUR: Record<string, string> = {
-              critical: "#ef4444",
-              high: "#f97316",
-              medium: "#eab308",
-              low: "#3b82f6",
-            };
-
-            return (
-              <div key={path}>
-                {/* File header — always visible */}
-                <button
-                  type="button"
-                  onClick={() => setExpandedFilePath(isOpen ? null : path)}
-                  className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors text-left"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <svg
-                      className={`w-3.5 h-3.5 shrink-0 text-gray-400 transition-transform ${
-                        isOpen ? "rotate-90" : ""
-                      }`}
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2.5}
-                        d="M9 5l7 7-7 7"
-                      />
-                    </svg>
-                    <span className="font-mono font-semibold text-sm text-gray-800 dark:text-gray-100 truncate">
-                      {display}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0 ml-4">
-                    {(["critical", "high", "medium", "low"] as const)
-                      .filter((s) => sevCounts[s])
-                      .map((s) => (
-                        <span
-                          key={s}
-                          className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-                          style={{
-                            background: `${SEV_COLOUR[s]}22`,
-                            color: SEV_COLOUR[s],
-                            border: `1px solid ${SEV_COLOUR[s]}44`,
-                          }}
-                        >
-                          {sevCounts[s]} {s}
-                        </span>
-                      ))}
-                    <span className="text-xs text-gray-400">{count}</span>
-                  </div>
-                </button>
-
-                {/* Expanded file map */}
-                {isOpen && (
-                  <div className="border-t border-gray-200 dark:border-gray-700">
-                    <FileMapView
-                      jobId={result.job_id}
-                      filePath={path}
-                      findings={fileFindings}
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <button
-        onClick={() => router.push("/")}
-        className="w-full py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors text-sm"
-      >
-        Analyze Another Project
-      </button>
-    </div>
-  );
-}
-
-// ── Mock fallback: diffs summary table ────────────────────────────────────────
-
-function MockDiffSummary({
-  diffs,
-}: {
-  diffs: NonNullable<JobResult["diffs"]>;
-}) {
-  const [page, setPage] = useState(0);
-
-  const fileStats = diffs.map((d) => ({
-    filename: d.filename,
-    ...diffStats(d.original, d.modified),
-  }));
-  const totalAdded = fileStats.reduce((s, f) => s + f.added, 0);
-  const totalRemoved = fileStats.reduce((s, f) => s + f.removed, 0);
-  const totalPages = Math.max(1, Math.ceil(fileStats.length / PAGE_SIZE));
-  const pageIndex = Math.min(page, totalPages - 1);
-  const pageItems = fileStats.slice(
-    pageIndex * PAGE_SIZE,
-    pageIndex * PAGE_SIZE + PAGE_SIZE,
-  );
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-gray-500 dark:text-gray-400">
-          <span className="font-semibold text-gray-800 dark:text-white">
-            {fileStats.length}
-          </span>{" "}
-          {fileStats.length === 1 ? "file" : "files"} changed{" · "}
-          <span className="text-green-600 dark:text-green-400 font-semibold">
-            +{totalAdded}
-          </span>{" "}
-          added{" · "}
-          <span className="text-red-500 dark:text-red-400 font-semibold">
-            -{totalRemoved}
-          </span>{" "}
-          removed
-        </p>
-        {diffs.length > 0 && (
-          <button
-            type="button"
-            onClick={() => downloadAllAsZip(diffs)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition-colors shrink-0"
-          >
-            <svg
-              className="w-3.5 h-3.5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+        <div className="flex flex-col gap-3">
+          {/* Toolbar: archive downloads + LLM */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <a
+              href={sourceArchiveUrl(result.job_id, "before")}
+              download
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 text-xs font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 3v12"
-              />
-            </svg>
-            Download All (.zip)
-          </button>
-        )}
-      </div>
-
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-        <table className="w-full text-sm table-fixed">
-          <colgroup>
-            <col className="w-8" />
-            <col />
-            <col className="w-16" />
-            <col className="w-16" />
-            <col className="w-14" />
-            <col className="w-24" />
-            <col className="w-10" />
-          </colgroup>
-          <thead className="bg-gray-50 dark:bg-gray-700/60 text-gray-500 dark:text-gray-400 uppercase text-xs tracking-wide">
-            <tr>
-              <th className="px-3 py-2 text-right">#</th>
-              <th className="px-3 py-2 text-left">File</th>
-              <th className="px-3 py-2 text-right">+Added</th>
-              <th className="px-3 py-2 text-right">−Removed</th>
-              <th className="px-3 py-2 text-right">Net</th>
-              <th className="px-3 py-2 text-center">Status</th>
-              <th className="px-3 py-2 text-center"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-            {pageItems.map((f, i) => {
-              const net = f.added - f.removed;
-              return (
-                <tr
-                  key={f.filename}
-                  className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors"
+              <svg
+                className="w-3 h-3"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 3v12"
+                />
+              </svg>
+              Original (.zip)
+            </a>
+            {((jobStatus === "completed" && hasRepaired) ||
+              anyFileLlmDone ||
+              llmArchiveState === "done") && (
+              <a
+                href={sourceArchiveUrl(result.job_id, "after")}
+                download
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-green-400 dark:border-green-700 text-green-700 dark:text-green-400 text-xs font-semibold hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors"
+              >
+                <svg
+                  className="w-3 h-3"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
                 >
-                  <td className="px-3 py-2 text-right text-gray-400 font-mono text-xs">
-                    {pageIndex * PAGE_SIZE + i + 1}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs text-gray-800 dark:text-gray-200 truncate">
-                    {f.filename}
-                  </td>
-                  <td className="px-3 py-2 text-right text-xs font-semibold text-green-600 dark:text-green-400">
-                    +{f.added}
-                  </td>
-                  <td className="px-3 py-2 text-right text-xs font-semibold text-red-500 dark:text-red-400">
-                    -{f.removed}
-                  </td>
-                  <td
-                    className={`px-3 py-2 text-right text-xs font-semibold ${net > 0 ? "text-green-600 dark:text-green-400" : net < 0 ? "text-red-500 dark:text-red-400" : "text-gray-400"}`}
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 3v12"
+                  />
+                </svg>
+                Modified (.zip)
+              </a>
+            )}
+            {/* Send All to LLM — always visible, persists after sending */}
+            <button
+              type="button"
+              disabled={llmArchiveState === "sending"}
+              onClick={handleSendAllToLlm}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 text-xs font-semibold hover:bg-indigo-50 dark:hover:bg-indigo-900/20 disabled:opacity-50 transition-colors"
+            >
+              {llmArchiveState === "sending" ? (
+                <>
+                  <svg
+                    className="w-3.5 h-3.5 animate-spin"
+                    fill="none"
+                    viewBox="0 0 24 24"
                   >
-                    {net > 0 ? `+${net}` : net}
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    {f.added > 0 || f.removed > 0 ? (
-                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300">
-                        Modified
-                      </span>
-                    ) : (
-                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 dark:bg-gray-700 text-gray-500">
-                        Unchanged
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-center">
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                    />
+                  </svg>
+                  Sending…
+                </>
+              ) : (
+                <>
+                  <svg
+                    className="w-3.5 h-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M13 10V3L4 14h7v7l9-11h-7z"
+                    />
+                  </svg>
+                  {llmArchiveState === "done"
+                    ? "Resend All to LLM"
+                    : "Send All to LLM"}
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* File accordion */}
+          <div className="flex flex-col gap-0 divide-y divide-gray-200 dark:divide-gray-700 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+            {uniqueFiles.map(({ basename, originalPath, count, display }) => {
+              const fileFindings = findings.filter(
+                (f) =>
+                  (normPath(f.file).split("/").pop() ?? "").toLowerCase() ===
+                  basename,
+              );
+              const isOpen = expandedFilePath === basename;
+
+              // Severity breakdown for this file
+              const sevCounts = fileFindings.reduce<Record<string, number>>(
+                (acc, f) => ({
+                  ...acc,
+                  [f.severity]: (acc[f.severity] ?? 0) + 1,
+                }),
+                {},
+              );
+              const SEV_COLOUR: Record<string, string> = {
+                critical: "#ef4444",
+                high: "#f97316",
+                medium: "#eab308",
+                low: "#3b82f6",
+              };
+
+              return (
+                <div key={basename}>
+                  {/* File header — always visible */}
+                  <div className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-800 text-left">
                     <button
                       type="button"
-                      title={`Download ${f.filename}`}
-                      onClick={() => {
-                        const diff = diffs.find(
-                          (d) => d.filename === f.filename,
-                        );
-                        if (diff) downloadModifiedFile(diff);
-                      }}
-                      className="inline-flex items-center text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-200 transition-colors"
+                      onClick={() =>
+                        setExpandedFilePath(isOpen ? null : basename)
+                      }
+                      className="flex items-center gap-3 min-w-0 flex-1 hover:opacity-80 transition-opacity"
                     >
                       <svg
-                        className="w-3.5 h-3.5"
+                        className={`w-3.5 h-3.5 shrink-0 text-gray-400 transition-transform ${
+                          isOpen ? "rotate-90" : ""
+                        }`}
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -421,40 +376,232 @@ function MockDiffSummary({
                         <path
                           strokeLinecap="round"
                           strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 3v12"
+                          strokeWidth={2.5}
+                          d="M9 5l7 7-7 7"
                         />
                       </svg>
+                      <span className="font-mono font-semibold text-sm text-gray-800 dark:text-gray-100 truncate">
+                        {display}
+                      </span>
                     </button>
-                  </td>
-                </tr>
+                    <div className="flex items-center gap-2 shrink-0 ml-4">
+                      {(["critical", "high", "medium", "low"] as const)
+                        .filter((s) => sevCounts[s])
+                        .map((s) => (
+                          <span
+                            key={s}
+                            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+                            style={{
+                              background: `${SEV_COLOUR[s]}22`,
+                              color: SEV_COLOUR[s],
+                              border: `1px solid ${SEV_COLOUR[s]}44`,
+                            }}
+                          >
+                            {sevCounts[s]} {s}
+                          </span>
+                        ))}
+                      <span className="text-xs text-gray-400">{count}</span>
+                      {/* Download original */}
+                      <button
+                        type="button"
+                        title="Download original"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDownloadFile(originalPath, "before");
+                        }}
+                        className="inline-flex items-center text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+                      >
+                        <svg
+                          className="w-3.5 h-3.5"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 3v12"
+                          />
+                        </svg>
+                      </button>
+                      {/* Download modified — shown only after this file sent to LLM (or backend repaired) */}
+                      {((jobStatus === "completed" && hasRepaired) ||
+                        llmFileState[basename] === "done") && (
+                        <button
+                          type="button"
+                          title="Download modified"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDownloadFile(originalPath, "after");
+                          }}
+                          className="inline-flex items-center text-green-500 hover:text-green-700 dark:hover:text-green-400 transition-colors"
+                        >
+                          <svg
+                            className="w-3.5 h-3.5"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 3v12"
+                            />
+                          </svg>
+                        </button>
+                      )}
+                      {/* Send to LLM — persists after sending */}
+                      <button
+                        type="button"
+                        title="Send to LLM for repair"
+                        disabled={llmFileState[basename] === "sending"}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSendToLlm(basename, originalPath);
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 disabled:opacity-50 transition-colors"
+                      >
+                        {llmFileState[basename] === "sending" ? (
+                          <>
+                            <svg
+                              className="w-3 h-3 animate-spin"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                            >
+                              <circle
+                                className="opacity-25"
+                                cx="12"
+                                cy="12"
+                                r="10"
+                                stroke="currentColor"
+                                strokeWidth="4"
+                              />
+                              <path
+                                className="opacity-75"
+                                fill="currentColor"
+                                d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                              />
+                            </svg>
+                            Sending…
+                          </>
+                        ) : (
+                          <>
+                            <svg
+                              className="w-3 h-3"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M13 10V3L4 14h7v7l9-11h-7z"
+                              />
+                            </svg>
+                            {llmFileState[basename] === "done"
+                              ? "Resend to LLM"
+                              : "Send to LLM"}
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Expanded file map */}
+                  {isOpen && (
+                    <div className="border-t border-gray-200 dark:border-gray-700">
+                      <FileMapView
+                        jobId={result.job_id}
+                        filePath={originalPath}
+                        findings={fileFindings}
+                      />
+                    </div>
+                  )}
+                </div>
               );
             })}
-          </tbody>
-        </table>
+          </div>
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="flex gap-3">
+        <button
+          onClick={() => router.push("/")}
+          className="flex-1 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors text-sm"
+        >
+          Analyze Another Project
+        </button>
+        <button
+          onClick={() => setShowDeleteModal(true)}
+          className="flex-1 py-2.5 rounded-lg border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 font-semibold hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-sm"
+        >
+          Delete Job
+        </button>
       </div>
 
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-          <button
-            type="button"
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-            disabled={pageIndex === 0}
-            className="px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            ← Prev
-          </button>
-          <span>
-            Page {pageIndex + 1} of {totalPages}
-          </span>
-          <button
-            type="button"
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-            disabled={pageIndex === totalPages - 1}
-            className="px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            Next →
-          </button>
+      {/* Delete confirmation modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 max-w-sm w-full mx-4">
+            <h2 className="text-base font-semibold text-gray-800 dark:text-white mb-2">
+              Delete this job?
+            </h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-5">
+              This will permanently remove the job and all its results. This
+              action cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowDeleteModal(false)}
+                disabled={deleting}
+                className="flex-1 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors text-sm disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={async () => {
+                  setDeleting(true);
+                  try {
+                    await deleteJob(result.job_id);
+                  } catch {
+                    // Navigate home regardless
+                  }
+                  router.push("/");
+                }}
+                className="flex-1 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold transition-colors text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {deleting && (
+                  <svg
+                    className="w-4 h-4 animate-spin"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                    />
+                  </svg>
+                )}
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

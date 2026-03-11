@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { downloadModifiedFile } from "../lib/download";
+import { downloadModifiedFile, downloadAllAsZip } from "../lib/download";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -305,6 +305,28 @@ export function DiffViewer({ diffs }: { diffs: FileDiff[] }) {
   if (diffs.length === 0) return null;
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => downloadAllAsZip(diffs)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition-colors"
+        >
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 3v12"
+            />
+          </svg>
+          Download All (.zip)
+        </button>
+      </div>
       {diffs.map((diff, i) => (
         <FileDiffBlock key={diff.filename} diff={diff} defaultOpen={i === 0} />
       ))}

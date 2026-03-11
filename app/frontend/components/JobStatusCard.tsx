@@ -3,6 +3,7 @@ import type { JobStatus } from "../types";
 const STATUS_LABEL: Record<JobStatus, string> = {
   pending: "Queued…",
   running: "Analyzing…",
+  ready_for_repair: "Analysis Complete",
   completed: "Complete",
   failed: "Failed",
 };
@@ -10,6 +11,7 @@ const STATUS_LABEL: Record<JobStatus, string> = {
 const STATUS_COLOR: Record<JobStatus, string> = {
   pending: "text-amber-500",
   running: "text-indigo-500",
+  ready_for_repair: "text-green-500",
   completed: "text-green-500",
   failed: "text-red-500",
 };

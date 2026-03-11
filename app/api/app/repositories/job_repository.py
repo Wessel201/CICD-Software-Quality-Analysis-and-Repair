@@ -27,6 +27,8 @@ class JobSnapshot:
     current_step: str
     error_message: str | None
     created_at: datetime
+    finished_at: datetime | None = None
+    source_label: str | None = None
 
 
 @dataclass
@@ -40,13 +42,13 @@ class JobRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def upsert_repository(self, repository_id: str, source_type: str) -> RepositoryModel:
+    def upsert_repository(self, repository_id: str, source_type: str, github_url: str | None = None) -> RepositoryModel:
         repository = self.session.get(RepositoryModel, repository_id)
         if repository is None:
             repository = RepositoryModel(
                 id=repository_id,
                 source_type=SourceType(source_type),
-                github_url=repository_id if source_type == SourceType.GITHUB_URL.value else None,
+                github_url=github_url if source_type == SourceType.GITHUB_URL.value else None,
                 storage_key=repository_id if source_type == SourceType.UPLOAD.value else None,
             )
             self.session.add(repository)
@@ -71,6 +73,12 @@ class JobRepository:
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
         return job
+
+    def delete_job(self, job_id: str) -> None:
+        # Raises 404 if not found; DB CASCADE removes analysis_runs, findings, artifacts
+        self.get_job(job_id)
+        self.session.execute(delete(JobModel).where(JobModel.id == job_id))
+        self.session.flush()
 
     def update_job_state(
         self,
@@ -169,7 +177,36 @@ class JobRepository:
             current_step=job.current_step,
             error_message=job.error_message,
             created_at=job.created_at,
+            finished_at=job.finished_at,
         )
+
+    def list_recent_jobs(self, limit: int = 50) -> list["JobSnapshot"]:
+        rows = self.session.execute(
+            select(JobModel).order_by(JobModel.created_at.desc()).limit(limit)
+        ).scalars().all()
+        results = []
+        for row in rows:
+            repository = self.session.get(RepositoryModel, row.repository_id)
+            label: str | None = None
+            if repository is not None:
+                if repository.source_type == SourceType.GITHUB_URL and repository.github_url:
+                    parts = [p for p in repository.github_url.rstrip("/").split("/") if p]
+                    label = parts[-1] if parts else repository.github_url
+                elif repository.storage_key:
+                    label = repository.storage_key
+            results.append(
+                JobSnapshot(
+                    job_id=row.id,
+                    status=row.status,
+                    progress=row.progress,
+                    current_step=row.current_step,
+                    error_message=row.error_message,
+                    created_at=row.created_at,
+                    finished_at=row.finished_at,
+                    source_label=label,
+                )
+            )
+        return results
 
     def get_job_context(self, job_id: str) -> JobContext:
         job = self.get_job(job_id)

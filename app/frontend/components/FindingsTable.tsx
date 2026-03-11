@@ -187,7 +187,7 @@ export function FindingsTable({ findings, selectedFinding, onSelect }: Props) {
       {/* Severity pill summary */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
         <span className="font-semibold text-gray-700 dark:text-gray-200">
-          {findings.length} findings
+          {findings.length} issues
         </span>
         {(["critical", "high", "medium", "low"] as const).map((sev) =>
           severityCounts[sev] ? (
@@ -199,85 +199,6 @@ export function FindingsTable({ findings, selectedFinding, onSelect }: Props) {
             </span>
           ) : null,
         )}
-      </div>
-
-      {/* Filters row — order matches column headers: Severity | Tool | File | Rule | Message */}
-      <div className="flex flex-wrap gap-2 text-xs">
-        {/* Severity */}
-        <select
-          value={severityFilter}
-          onChange={(e) => {
-            setSeverityFilter(e.target.value);
-            setPage(0);
-          }}
-          className="px-2.5 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-        >
-          <option value={ALL}>All severities</option>
-          {(["critical", "high", "medium", "low"] as const).map((s) => (
-            <option key={s} value={s}>
-              {s.charAt(0).toUpperCase() + s.slice(1)}
-            </option>
-          ))}
-        </select>
-        {/* Tool */}
-        <select
-          value={toolFilter}
-          onChange={(e) => {
-            setToolFilter(e.target.value);
-            setPage(0);
-          }}
-          className="px-2.5 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-        >
-          <option value={ALL}>All tools</option>
-          {uniqueTools.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-        {/* File */}
-        <select
-          value={fileFilter}
-          onChange={(e) => {
-            setFileFilter(e.target.value);
-            setPage(0);
-          }}
-          className="px-2.5 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-        >
-          <option value={ALL}>All files</option>
-          {uniqueFiles.map((f) => (
-            <option key={f} value={f}>
-              {f}
-            </option>
-          ))}
-        </select>
-        {/* Rule */}
-        <select
-          value={ruleFilter}
-          onChange={(e) => {
-            setRuleFilter(e.target.value);
-            setPage(0);
-          }}
-          className="px-2.5 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-        >
-          <option value={ALL}>All rules</option>
-          {uniqueRules.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-        {/* Message search */}
-        <input
-          type="text"
-          placeholder="Search message…"
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setPage(0);
-          }}
-          className="flex-1 min-w-36 px-2.5 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-        />
       </div>
 
       {/* Table */}
@@ -314,7 +235,7 @@ export function FindingsTable({ findings, selectedFinding, onSelect }: Props) {
                   </span>
                 </th>
               ))}
-              <th className="px-3 py-2 text-left">Message</th>
+              <th className="px-3 py-2 text-left pl-6">Message</th>
             </tr>
             {/* Filter row — cells align exactly with colgroup widths */}
             <tr className="border-t border-gray-200 dark:border-gray-600">
@@ -391,7 +312,7 @@ export function FindingsTable({ findings, selectedFinding, onSelect }: Props) {
                   colSpan={6}
                   className="px-3 py-6 text-center text-gray-400 dark:text-gray-500"
                 >
-                  No findings match your filters.
+                  No issues match your filters.
                 </td>
               </tr>
             )}

@@ -3,7 +3,7 @@
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import JSZip from "jszip";
-import { createJob, mockCreateJob } from "../lib/api";
+import { createJob } from "../lib/api";
 
 function isArchive(name: string): boolean {
   const n = name.toLowerCase();
@@ -47,12 +47,29 @@ async function zipPyFiles(files: File[]): Promise<File> {
   return new File([blob], zipName, { type: "application/zip" });
 }
 
+/** Validates a GitHub repo URL. Returns an error string or null if valid. */
+function validateGithubUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (u.hostname !== "github.com")
+      return "URL must be a github.com link (e.g. https://github.com/owner/repo).";
+    const parts = u.pathname.replace(/^\//, "").split("/").filter(Boolean);
+    if (parts.length < 2)
+      return "URL must point to a repository (e.g. https://github.com/owner/repo).";
+    return null;
+  } catch {
+    return "Invalid URL — please enter a valid https://github.com/owner/repo link.";
+  }
+}
+
 export function SubmitForm() {
   const router = useRouter();
 
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [fileWarning, setFileWarning] = useState<string | null>(null);
   const [githubUrl, setGithubUrl] = useState("");
+  const [githubError, setGithubError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -79,6 +96,16 @@ export function SubmitForm() {
     e.preventDefault();
     if (fileWarning || submitting) return;
 
+    // Validate GitHub URL before submitting
+    if (githubUrl) {
+      const urlErr = validateGithubUrl(githubUrl);
+      if (urlErr) {
+        setGithubError(urlErr);
+        return;
+      }
+    }
+
+    setSubmitError(null);
     setSubmitting(true);
     try {
       let job;
@@ -94,11 +121,17 @@ export function SubmitForm() {
       try {
         job = await createJob(uploadFile, githubUrl);
       } catch (err) {
-        console.warn(
-          "[API] POST /api/v1/jobs failed, falling back to mock mode",
-          err,
+        const msg = err instanceof Error ? err.message : String(err);
+        // "Failed to fetch" / "NetworkError" → server unreachable
+        const isNetworkErr =
+          msg.startsWith("Failed to fetch") ||
+          msg.toLowerCase().includes("networkerror");
+        setSubmitError(
+          isNetworkErr
+            ? "Could not reach the analysis server. Make sure it is running and try again."
+            : msg,
         );
-        job = await mockCreateJob();
+        return;
       }
 
       // Build filesParam
@@ -128,10 +161,29 @@ export function SubmitForm() {
           type="url"
           placeholder="https://github.com/username/repo"
           value={githubUrl}
-          onChange={(e) => setGithubUrl(e.target.value)}
+          onChange={(e) => {
+            setGithubUrl(e.target.value);
+            setGithubError(null);
+          }}
           disabled={submitting}
           className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-colors disabled:opacity-60"
         />
+        {githubError && (
+          <p className="mt-1.5 text-sm text-red-600 dark:text-red-400 flex items-center gap-1.5">
+            <svg
+              className="w-4 h-4 shrink-0"
+              fill="currentColor"
+              viewBox="0 0 20 20"
+            >
+              <path
+                fillRule="evenodd"
+                d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"
+                clipRule="evenodd"
+              />
+            </svg>
+            {githubError}
+          </p>
+        )}
       </div>
 
       {/* Divider */}
@@ -247,6 +299,24 @@ export function SubmitForm() {
           select one or more <strong>.py</strong> files (auto-zipped)
         </span>
       </div>
+
+      {/* Submit error */}
+      {submitError && (
+        <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1.5">
+          <svg
+            className="w-4 h-4 shrink-0"
+            fill="currentColor"
+            viewBox="0 0 20 20"
+          >
+            <path
+              fillRule="evenodd"
+              d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+              clipRule="evenodd"
+            />
+          </svg>
+          {submitError}
+        </p>
+      )}
 
       {/* Submit */}
       <button

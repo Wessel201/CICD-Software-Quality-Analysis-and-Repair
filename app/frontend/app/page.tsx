@@ -2,6 +2,7 @@
 
 import { SubmitForm } from "../components/SubmitForm";
 import { NavBar } from "../components/NavBar";
+import { RecentJobs } from "../components/RecentJobs";
 
 export default function Home() {
   return (
@@ -9,9 +10,10 @@ export default function Home() {
       <NavBar subtitle="Upload your project and get AI-powered improvements" />
 
       {/* Scrollable body */}
-      <div className="flex-1 overflow-y-auto px-4 pb-8">
+      <div className="flex-1 overflow-y-auto hide-scrollbar px-4 pb-8">
         <div className="max-w-2xl mx-auto">
           <SubmitForm />
+          <RecentJobs />
         </div>
       </div>
     </div>

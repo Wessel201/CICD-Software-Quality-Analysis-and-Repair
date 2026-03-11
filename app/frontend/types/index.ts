@@ -1,7 +1,12 @@
 import type { FileDiff } from "../components/DiffViewer";
 
 // Statuses used internally by the frontend (normalised)
-export type JobStatus = "pending" | "running" | "completed" | "failed";
+export type JobStatus =
+  | "pending"
+  | "running"
+  | "ready_for_repair"
+  | "completed"
+  | "failed";
 
 // All status strings the real API can return
 export type ApiJobStatus =
@@ -50,4 +55,13 @@ export interface JobResult {
   patches?: PatchInfo[];
   artifacts?: { artifact_id: string; name: string }[];
   diffs?: FileDiff[];
+}
+
+export interface JobListItem {
+  job_id: string;
+  /** Raw API status, e.g. "DONE", "FAILED" */
+  status: string;
+  created_at: string;
+  finished_at: string | null;
+  source_label: string | null;
 }

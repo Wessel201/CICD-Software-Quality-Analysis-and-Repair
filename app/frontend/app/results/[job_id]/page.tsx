@@ -1,16 +1,11 @@
 "use client";
 
-import { use, useEffect, useRef, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { JobStatusCard } from "../../../components/JobStatusCard";
 import { ResultsCard } from "../../../components/ResultsCard";
 import { NavBar } from "../../../components/NavBar";
-import {
-  pollJobStatus,
-  getJobResults,
-  mockPollJobStatus,
-  mockGetResults,
-} from "../../../lib/api";
+import { pollJobStatus, getJobResults, triggerRepair } from "../../../lib/api";
 import type { JobResult, JobStatus } from "../../../types";
 
 type PageState = "polling" | "done" | "error";
@@ -27,12 +22,14 @@ export default function ResultsPage({ params }: Props) {
   const [jobStatus, setJobStatus] = useState<JobStatus>("pending");
   const [result, setResult] = useState<JobResult | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
+  const [retrigger, setRetrigger] = useState(0);
 
   const attemptRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    attemptRef.current = 0;
 
     const poll = async () => {
       try {
@@ -40,18 +37,26 @@ export default function ResultsPage({ params }: Props) {
         try {
           job = await pollJobStatus(job_id, attemptRef.current);
         } catch {
-          job = await mockPollJobStatus(job_id, attemptRef.current);
+          if (!cancelled) {
+            setErrorMsg("Lost connection while polling for job status.");
+            setPageState("error");
+          }
+          return;
         }
 
         if (cancelled) return;
         setJobStatus(job.status);
 
-        if (job.status === "completed") {
+        if (job.status === "completed" || job.status === "ready_for_repair") {
           let results: JobResult;
           try {
             results = await getJobResults(job_id);
           } catch {
-            results = await mockGetResults(job_id);
+            if (!cancelled) {
+              setErrorMsg("Failed to fetch analysis results.");
+              setPageState("error");
+            }
+            return;
           }
           if (!cancelled) {
             setResult(results);
@@ -80,21 +85,39 @@ export default function ResultsPage({ params }: Props) {
       cancelled = true;
       if (timerRef.current) clearTimeout(timerRef.current);
     };
+  }, [job_id, retrigger]);
+
+  const handleRepair = useCallback(async () => {
+    try {
+      await triggerRepair(job_id);
+    } catch {
+      setErrorMsg("Failed to trigger repair. Please try again.");
+      setPageState("error");
+      return;
+    }
+    setResult(null);
+    setPageState("polling");
+    setJobStatus("running");
+    setRetrigger((n) => n + 1);
   }, [job_id]);
 
   const subtitle =
     pageState === "polling"
-      ? "Processing your project…"
-      : pageState === "done"
-        ? "Analysis results ready."
-        : "Something went wrong.";
+      ? jobStatus === "running"
+        ? "Repairing your project…"
+        : "Analysing your project…"
+      : pageState === "done" && jobStatus === "ready_for_repair"
+        ? "Analysis complete — ready for AI repair."
+        : pageState === "done"
+          ? "Analysis and repair complete."
+          : "Something went wrong.";
 
   return (
     <div className="h-screen overflow-hidden flex flex-col bg-gradient-to-br from-slate-50 to-blue-100 dark:from-gray-900 dark:to-gray-800 transition-colors duration-300">
       <NavBar subtitle={subtitle} />
 
       {/* Scrollable body */}
-      <div className="flex-1 overflow-y-auto px-4 pb-8">
+      <div className="flex-1 overflow-y-auto hide-scrollbar px-4 pb-8">
         <div className="max-w-2xl mx-auto">
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8 transition-colors">
             {pageState === "polling" && (
@@ -128,7 +151,13 @@ export default function ResultsPage({ params }: Props) {
               </div>
             )}
 
-            {pageState === "done" && result && <ResultsCard result={result} />}
+            {pageState === "done" && result && (
+              <ResultsCard
+                result={result}
+                jobStatus={jobStatus}
+                onRepair={handleRepair}
+              />
+            )}
           </div>
         </div>
       </div>
