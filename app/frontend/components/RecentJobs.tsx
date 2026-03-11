@@ -28,7 +28,14 @@ export function RecentJobs() {
       .catch(() => setJobs([]));
   }, []);
 
-  const doneJobs = jobs?.filter((j) => j.status === "DONE") ?? [];
+  const IN_PROGRESS = new Set([
+    "QUEUED",
+    "FETCHING",
+    "ANALYZING",
+    "REPAIRING",
+    "REANALYZING",
+  ]);
+  const doneJobs = jobs?.filter((j) => !IN_PROGRESS.has(j.status)) ?? [];
   if (!jobs || doneJobs.length === 0) return null;
 
   const visible = showAll ? doneJobs : doneJobs.slice(0, DEFAULT_VISIBLE);
@@ -62,7 +69,15 @@ export function RecentJobs() {
                 className="flex-1 flex items-center justify-between px-4 py-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors min-w-0"
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className="inline-block w-2 h-2 rounded-full shrink-0 bg-green-500" />
+                  <span
+                    className={`inline-block w-2 h-2 rounded-full shrink-0 ${
+                      job.status === "DONE"
+                        ? "bg-green-500"
+                        : job.status === "FAILED"
+                          ? "bg-red-500"
+                          : "bg-blue-400"
+                    }`}
+                  />
                   <div className="min-w-0">
                     <p className="font-medium text-sm text-gray-800 dark:text-gray-100 truncate">
                       {label}

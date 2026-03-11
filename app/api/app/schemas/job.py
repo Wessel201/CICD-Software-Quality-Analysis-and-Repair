@@ -81,6 +81,8 @@ class JobRepairRequest(BaseModel):
 
 class ErrorBody(BaseModel):
     code: str
+    message: str = ""
+    details: dict[str, str] = Field(default_factory=dict)
 
 
 class SourceFileResponse(BaseModel):
