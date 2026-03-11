@@ -2,26 +2,49 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import JSZip from "jszip";
 import { createJob, mockCreateJob } from "../lib/api";
 
-const ACCEPTED_EXTENSIONS = [".zip", ".py"];
+function isArchive(name: string): boolean {
+  const n = name.toLowerCase();
+  return (
+    n.endsWith(".zip") ||
+    n.endsWith(".tar") ||
+    n.endsWith(".gz") ||
+    n.endsWith(".tgz") ||
+    n.endsWith(".tar.gz")
+  );
+}
+
+function isPython(name: string): boolean {
+  return name.toLowerCase().endsWith(".py");
+}
 
 function getFilesWarning(files: File[]): string | null {
-  const hasZip = files.some((f) => f.name.toLowerCase().endsWith(".zip"));
-  if (hasZip) {
-    if (files.length > 1)
-      return "When uploading a .zip, select only one file at a time.";
+  // Multiple files: all must be .py
+  if (files.length > 1) {
+    const nonPy = files.find((f) => !isPython(f.name));
+    if (nonPy)
+      return `Mix of file types is not supported. Select only .py files together, or a single archive.`;
     return null;
   }
-  const invalid = files.find(
-    (f) =>
-      !ACCEPTED_EXTENSIONS.includes(
-        f.name.slice(f.name.lastIndexOf(".")).toLowerCase(),
-      ),
-  );
-  if (invalid)
-    return `"${invalid.name}" is not supported. Only .zip archives and .py files are accepted.`;
+  // Single file: must be an archive or .py
+  const f = files[0];
+  if (!isArchive(f.name) && !isPython(f.name))
+    return `"${f.name}" is not supported. Upload a .zip/.tar.gz archive or one or more .py files.`;
   return null;
+}
+
+/** Packs one or more .py files into a zip and returns it as a File. */
+async function zipPyFiles(files: File[]): Promise<File> {
+  const zip = new JSZip();
+  for (const f of files) {
+    zip.file(f.name, f);
+  }
+  const blob = await zip.generateAsync({ type: "blob" });
+  const zipName =
+    files.length === 1 ? files[0].name.replace(/\.py$/i, ".zip") : "upload.zip";
+  return new File([blob], zipName, { type: "application/zip" });
 }
 
 export function SubmitForm() {
@@ -59,11 +82,17 @@ export function SubmitForm() {
     setSubmitting(true);
     try {
       let job;
-      const singleFile = selectedFiles.length === 1 ? selectedFiles[0] : null;
+      // If .py files were selected, zip them first
+      let uploadFile: File | null =
+        selectedFiles.length === 1 ? selectedFiles[0] : null;
+      if (
+        selectedFiles.length > 0 &&
+        selectedFiles.every((f) => isPython(f.name))
+      ) {
+        uploadFile = await zipPyFiles(selectedFiles);
+      }
       try {
-        if (selectedFiles.length > 1)
-          throw new Error("Multiple .py files — skipping to mock");
-        job = await createJob(singleFile, githubUrl);
+        job = await createJob(uploadFile, githubUrl);
       } catch (err) {
         console.warn(
           "[API] POST /api/v1/jobs failed, falling back to mock mode",
@@ -73,27 +102,7 @@ export function SubmitForm() {
       }
 
       // Build filesParam
-      let filesParam: string;
-      if (githubUrl) {
-        filesParam = "*";
-      } else if (singleFile) {
-        const ext = singleFile.name
-          .slice(singleFile.name.lastIndexOf("."))
-          .toLowerCase();
-        filesParam =
-          ext === ".zip"
-            ? "*"
-            : singleFile.name
-                .replace(/\.py$/i, "")
-                .replace(/_(original|modified)$/i, "");
-      } else {
-        // Multiple .py files — join their stems
-        filesParam = selectedFiles
-          .map((f) =>
-            f.name.replace(/\.py$/i, "").replace(/_(original|modified)$/i, ""),
-          )
-          .join(",");
-      }
+      const filesParam = "*";
 
       router.push(
         `/results/${job.job_id}?files=${encodeURIComponent(filesParam)}`,
@@ -182,14 +191,20 @@ export function SubmitForm() {
           </div>
           {selectedFiles.length === 0 && (
             <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-              .zip archive or one or more .py files
+              .zip / .tar.gz archive, or one or more .py files
             </p>
           )}
+          {selectedFiles.length > 0 &&
+            selectedFiles.every((f) => isPython(f.name)) && (
+              <p className="text-xs text-indigo-500 dark:text-indigo-400 mt-1">
+                Will be zipped automatically before upload
+              </p>
+            )}
         </div>
         <input
           ref={fileInputRef}
           type="file"
-          accept=".zip,.py"
+          accept=".zip,.tar,.gz,.tgz,.py"
           multiple
           onChange={handleFileSelect}
           className="hidden"
@@ -228,8 +243,8 @@ export function SubmitForm() {
           />
         </svg>
         <span className="text-xs text-amber-700 dark:text-amber-400">
-          Only <strong>.zip</strong> archives and <strong>.py</strong> files are
-          currently supported
+          Upload a <strong>.zip</strong> / <strong>.tar.gz</strong> archive, or
+          select one or more <strong>.py</strong> files (auto-zipped)
         </span>
       </div>
 

@@ -223,7 +223,7 @@ export function FindingsTable({ findings, selectedFinding, onSelect }: Props) {
             <col className="w-[56px]" />
             <col className="w-[120px]" />
             <col className="w-[80px]" />
-            <col /> {/* message takes remaining space */}
+            <col />
           </colgroup>
           <thead className="bg-gray-50 dark:bg-gray-700/60 text-gray-500 dark:text-gray-400 uppercase tracking-wide select-none">
             <tr>
