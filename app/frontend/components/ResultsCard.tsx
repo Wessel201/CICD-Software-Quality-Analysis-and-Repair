@@ -8,10 +8,6 @@ import { FindingDetailPanel } from "./FindingDetailPanel";
 import { FindingsTable } from "./FindingsTable";
 import { FileMapView } from "./FileMapView";
 
-const PAGE_SIZE = 5;
-
-/** Normalise file paths so tools that prefix with './' or use different separators
- *  don't create duplicate accordion entries for the same physical file. */
 function normPath(p: string) {
   return p.replace(/\\/g, "/").replace(/^\.\//, "");
 }
@@ -21,7 +17,7 @@ type Tab = "summary" | "detail" | "filemap";
 interface ResultsCardProps {
   result: JobResult;
   jobStatus: JobStatus;
-  onRepair?: () => void;
+  onRepair: () => Promise<void>;
 }
 
 export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
@@ -90,7 +86,12 @@ export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
   async function handleSendAllToLlm() {
     setLlmArchiveState("sending");
     console.log(`[LLM] Sending all files to LLM for job: ${result.job_id}`);
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    try {
+      await onRepair();
+    } catch {
+      setLlmArchiveState("idle");
+      return;
+    }
     console.log(`[LLM] All files received by LLM for job: ${result.job_id}`);
     const allDone: Record<string, "done"> = {};
     for (const { basename } of uniqueFiles) allDone[basename] = "done";

@@ -2,20 +2,13 @@
 
 import { useTheme } from "../providers/ThemeProvider";
 
-interface ThemeToggleProps {
-  /** Override positioning/margin classes. Defaults to `fixed top-4 right-4`. */
-  className?: string;
-}
-
-export function ThemeToggle({ className }: ThemeToggleProps = {}) {
+export function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
-
-  const posClass = className ?? "fixed top-4 right-4";
 
   return (
     <button
       onClick={toggleTheme}
-      className={`${posClass} p-2.5 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all duration-200 hover:scale-110 shadow-md hover:shadow-lg`}
+      className="fixed top-4 right-4 p-2.5 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all duration-200 hover:scale-110 shadow-md hover:shadow-lg"
       aria-label="Toggle theme"
       title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
     >
