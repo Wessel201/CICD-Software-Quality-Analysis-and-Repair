@@ -1,0 +1,9 @@
+bandit
+pylint
+radon
+trufflehog
+python-dotenv
+gitpython
+fastapi
+uvicorn
+python-multipart
