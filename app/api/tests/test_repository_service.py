@@ -64,7 +64,7 @@ def test_clone_public_repository_calls_validation_and_clone(tmp_path, monkeypatc
     assert commit_hash == "0123456789abcdef"
     assert captured["validated_url"] == "https://github.com/acme/repo"
     assert captured["cloned_url"] == "https://github.com/acme/repo"
-    assert captured["target_directory"].endswith("fixed-submission-id\\source")
+    assert captured["target_directory"].replace("\\", "/").endswith("fixed-submission-id/source")
 
 
 def test_clone_public_repository_cleans_up_directory_on_failure(tmp_path, monkeypatch) -> None:

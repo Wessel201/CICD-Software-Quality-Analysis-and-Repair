@@ -197,3 +197,15 @@ def test_create_job_from_upload_then_repair(monkeypatch) -> None:
     assert download_response.status_code == 200
     assert download_response.headers["content-type"].startswith("application/json")
     assert "tool" in download_response.text
+
+
+def test_download_artifact_redirects_for_presigned_urls(monkeypatch) -> None:
+    monkeypatch.setattr(
+        jobs_routes.job_service,
+        "get_job_artifact_download",
+        lambda job_id, artifact_id: ("https://signed.example/download", "application/json"),
+    )
+
+    response = client.get("/api/v1/jobs/job_123/artifacts/9/download", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "https://signed.example/download"

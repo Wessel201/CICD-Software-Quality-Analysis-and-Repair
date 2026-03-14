@@ -1,12 +1,21 @@
 # QC Worker - Development Guide
 
-This worker is the core engine for Scenario 2 (Pipeline).
+This worker is the async execution engine for Terraform-backed processing.
+
+Production authority:
+- Queue: `SQS_QUEUE_URL`
+- Source/artifacts storage: `S3_BUCKET_NAME`
+- Metadata/findings: PostgreSQL (`DATABASE_URL` or `DB_*` variables)
 
 ## Getting Started
 
 1.  **Environment Setup**:
     - Create a `.env` file in the root directory.
-    - Add your `UVALLM_API_KEY`.
+    - Provide cloud/runtime variables:
+      - `SQS_QUEUE_URL`
+      - `S3_BUCKET_NAME`
+      - `AWS_REGION` (defaults to `eu-central-1`)
+      - `DATABASE_URL` or `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`
 
 2.  **Deployment**:
     Run the following command to start the worker:
@@ -14,16 +23,34 @@ This worker is the core engine for Scenario 2 (Pipeline).
     docker-compose up --build
     ```
 
-## TODOs for Cloud/API Teams
+3.  **Runtime Entry Point**:
+    - Container default command is now:
+    ```bash
+    python main.py
+    ```
+    - `main.py` long-polls SQS and processes one message at a time.
+
+## Current Processing Flow
+
+1. Receive message from SQS (`job_id`, `action`, optional control fields)
+2. Read repository/job context from shared PostgreSQL
+3. Fetch source from GitHub or S3 upload archive
+4. Run analyzers (Bandit, Pylint, Radon, TruffleHog)
+5. Persist findings into `analysis_runs` + `findings`
+6. Update job lifecycle status in `jobs`
+7. Delete SQS message on success; keep on failure for retry/DLQ handling
+
+## Remaining Work
 
 ### Cloud Interaction
-- [ ] **S3 Integration**: Currently, the worker scans the local filesystem mapped via Docker volume (`/src`). For production, we need logic to pull repositories from S3 or directly from GitHub via the API.
-- [ ] **Deployment**: The `terraform/` directory should be updated to deploy the worker as a task (e.g., AWS ECS or Lambda) if not using EC2 directly.
+- [x] S3/GitHub source retrieval implemented in worker runtime.
+- [ ] Store generated artifacts/reports back to S3 with signed download support.
 
 ### API Integration
-- [ ] **Job Queue**: The worker currently runs a single analysis. We should implement a message queue (e.g., Redis or AWS SQS) so the API can push "analysis jobs" and the worker can process them asynchronously.
-- [ ] **Webhook**: Integrate GitHub webhooks to trigger the worker on `push` events.
+- [x] SQS-driven async job intake implemented.
+- [ ] Remove deprecated local/Celery pathways once all environments are migrated.
 
 ### Verification & Git
-- [ ] **Git Push**: Logic to create a new branch and push fixes is drafted but needs GitHub token configuration (`GITHUB_TOKEN`).
-- [ ] **Unit Tests**: The worker needs to be able to run `pytest` or similar if the repository provides them.
+- [ ] Implement actual repair transformations (currently repair phase re-analyzes unchanged source).
+- [ ] Add test execution hooks (optional, repository-aware).
+- [ ] Add structured observability and DLQ replay runbooks.

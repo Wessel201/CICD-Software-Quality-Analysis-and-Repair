@@ -1,0 +1,78 @@
+name: Production Deployment Pipeline
+
+# Requirement #5: Automated deployment when a new push is made
+on:
+  push:
+    branches:
+      - main
+
+# Define your environment variables here to keep the script clean
+env:
+  AWS_REGION: "eu-central-1"
+  API_ECR_REPO: "code-quality-api"
+  WORKER_ECR_REPO: "code-quality-worker"
+  ECS_CLUSTER: "code-quality-cluster"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Grab the latest code from your repository
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      # 2. Authenticate securely with AWS using GitHub Secrets
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 3. Setup and Run Terraform (Infrastructure as Code)
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init & Apply
+        working-directory: ./terraform
+        env:
+          # Securely inject the database password we discussed earlier
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+        run: |
+          terraform init
+          terraform apply -auto-approve
+
+      # 4. Log in to Amazon Elastic Container Registry (ECR)
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 5. Build, Tag, and Push the API Docker Image
+      - name: Build and Push API Image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }} # Uses the Git commit hash as the version
+        run: |
+          cd app/api
+          docker build -t $REGISTRY/$API_ECR_REPO:$IMAGE_TAG -t $REGISTRY/$API_ECR_REPO:latest .
+          docker push -a $REGISTRY/$API_ECR_REPO
+
+      # 6. Build, Tag, and Push the Worker Docker Image
+      - name: Build and Push Worker Image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd app/worker
+          docker build -t $REGISTRY/$WORKER_ECR_REPO:$IMAGE_TAG -t $REGISTRY/$WORKER_ECR_REPO:latest .
+          docker push -a $REGISTRY/$WORKER_ECR_REPO
+
+      # 7. Force ECS to deploy the newly pushed containers
+      - name: Force ECS API Deployment
+        run: |
+          aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} --service api-service --force-new-deployment
+
+      - name: Force ECS Worker Deployment
+        run: |
+          aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} --service worker-service --force-new-deployment

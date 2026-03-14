@@ -1,5 +1,5 @@
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from app.schemas.job import JobArtifactsResponse, JobCreateResponse, JobListResponse, JobRepairRequest, JobResultsResponse, JobStatusResponse, SourceFileResponse
 from app.services.job_service import JobService
@@ -23,6 +23,7 @@ def create_job(
     auto_repair: bool = Form(default=True),
     file: UploadFile | None = File(default=None),
 ) -> JobCreateResponse:
+    storage_key: str | None = None
     source_type = validate_job_source(
         github_url=github_url,
         file=file,
@@ -36,13 +37,14 @@ def create_job(
     else:
         if file is None:
             raise HTTPException(status_code=400, detail="file is required.")
-        repository_id, _ = repository_service.store_uploaded_archive(file)
+        repository_id, storage_key = repository_service.store_uploaded_archive(file)
 
     return job_service.create_job(
         source_type=source_type,
         source_reference=repository_id,
         auto_repair=auto_repair,
         github_url=github_url if source_type == "github_url" else None,
+        storage_key=storage_key if source_type == "upload" else None,
     )
 
 
@@ -62,8 +64,11 @@ def get_job_artifacts(job_id: str) -> JobArtifactsResponse:
 
 
 @router.get("/{job_id}/artifacts/{artifact_id}/download")
-def download_job_artifact(job_id: str, artifact_id: int) -> FileResponse:
+def download_job_artifact(job_id: str, artifact_id: int) -> Response:
     artifact_path, content_type = job_service.get_job_artifact_download(job_id=job_id, artifact_id=artifact_id)
+    if isinstance(artifact_path, str) and artifact_path.startswith("http"):
+        return RedirectResponse(url=artifact_path, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
     return FileResponse(
         path=artifact_path,
         media_type=content_type or "application/octet-stream",

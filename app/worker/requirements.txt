@@ -7,3 +7,7 @@ gitpython
 fastapi
 uvicorn
 python-multipart
+boto3
+psycopg[binary]
+pytest
+pytest-cov

@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from app.db.models import AnalysisPhase, JobStatusDb
 from app.db.init_db import init_db
 from app.db.session import SessionLocal
+from app.cloud import CloudQualityManager
 from app.repositories.job_repository import JobRepository
 from app.services.analyzer_runner import AnalyzerRunner
 from app.schemas.job import Finding, JobCreateResponse, JobListItem, JobListResponse, JobResultsResponse, JobStatus, JobStatusResponse, JobSummary, PatchInfo
@@ -30,15 +31,28 @@ class JobService:
 
     def __init__(self, analyzer_runner: AnalyzerRunner | None = None) -> None:
         self.analyzer_runner = analyzer_runner or AnalyzerRunner()
+        self.cloud_manager = CloudQualityManager()
 
-    def create_job(self, source_type: str, source_reference: str, auto_repair: bool, github_url: str | None = None) -> JobCreateResponse:
+    def create_job(
+        self,
+        source_type: str,
+        source_reference: str,
+        auto_repair: bool,
+        github_url: str | None = None,
+        storage_key: str | None = None,
+    ) -> JobCreateResponse:
         job_id = f"job_{uuid4().hex[:12]}"
         created_at = None
 
         with self._lock:
             with SessionLocal() as session:
                 repository = JobRepository(session)
-                repository.upsert_repository(repository_id=source_reference, source_type=source_type, github_url=github_url)
+                repository.upsert_repository(
+                    repository_id=source_reference,
+                    source_type=source_type,
+                    github_url=github_url,
+                    storage_key=storage_key,
+                )
                 job = repository.create_job(job_id=job_id, repository_id=source_reference, auto_repair=auto_repair)
                 created_at = job.created_at
                 session.commit()
@@ -78,7 +92,7 @@ class JobService:
 
         jobs: list[JobListItem] = []
         for s in snapshots:
-            # For upload jobs, storage_key is the UUID — try to find the real filename on disk
+            # For local upload jobs, resolve UUID folder to human-friendly archive filename.
             label = s.source_label
             if label and not label.startswith("http") and "/" not in label:
                 # Looks like a UUID storage_key; resolve filename from disk
@@ -168,11 +182,18 @@ class JobService:
         filename = f"{job_id}_{phase}_source.zip"
         return zip_bytes, filename
 
-    def get_job_artifact_download(self, job_id: str, artifact_id: int) -> tuple[Path, str | None]:
+    def get_job_artifact_download(self, job_id: str, artifact_id: int) -> tuple[str | Path, str | None]:
         with SessionLocal() as session:
             repository = JobRepository(session)
             repository.get_job_snapshot(job_id)
             artifact = repository.get_artifact_for_job(job_id=job_id, artifact_id=artifact_id)
+
+        if artifact.storage_key.startswith("s3://"):
+            storage_key = artifact.storage_key.removeprefix("s3://")
+            return self.cloud_manager.generate_download_url(storage_key), artifact.content_type
+
+        if artifact.storage_key.startswith("uploads/") and os.getenv("S3_BUCKET_NAME"):
+            return self.cloud_manager.generate_download_url(artifact.storage_key), artifact.content_type
 
         artifact_path = Path(artifact.storage_key)
         if not artifact_path.is_absolute():
@@ -220,28 +241,30 @@ class JobService:
         return self.get_job_status(job_id)
 
     def dispatch_analysis_pipeline(self, job_id: str, auto_repair: bool) -> None:
-        if os.getenv("CELERY_TASK_ALWAYS_EAGER", "true").lower() == "true":
+        if not os.getenv("SQS_QUEUE_URL"):
             self.run_analysis_pipeline(job_id=job_id, auto_repair=auto_repair)
             return
 
-        try:
-            from app.workers.job_tasks import run_analysis_pipeline_task
-
-            run_analysis_pipeline_task.delay(job_id=job_id, auto_repair=auto_repair)
-        except Exception:
-            self.run_analysis_pipeline(job_id=job_id, auto_repair=auto_repair)
+        self.cloud_manager.submit_job(
+            {
+                "job_id": job_id,
+                "action": "analyze",
+                "auto_repair": auto_repair,
+            }
+        )
 
     def dispatch_repair_pipeline(self, job_id: str, repair_strategy: str) -> None:
-        if os.getenv("CELERY_TASK_ALWAYS_EAGER", "true").lower() == "true":
+        if not os.getenv("SQS_QUEUE_URL"):
             self.run_repair_pipeline(job_id=job_id, repair_strategy=repair_strategy)
             return
 
-        try:
-            from app.workers.job_tasks import run_repair_pipeline_task
-
-            run_repair_pipeline_task.delay(job_id=job_id, repair_strategy=repair_strategy)
-        except Exception:
-            self.run_repair_pipeline(job_id=job_id, repair_strategy=repair_strategy)
+        self.cloud_manager.submit_job(
+            {
+                "job_id": job_id,
+                "action": "repair",
+                "repair_strategy": repair_strategy,
+            }
+        )
 
     def run_analysis_pipeline(self, job_id: str, auto_repair: bool) -> None:
         try:
