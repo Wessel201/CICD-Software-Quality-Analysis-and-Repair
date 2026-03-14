@@ -37,8 +37,8 @@ def test_create_job_upload_none_guard(monkeypatch):
     mounted = _mount_client()
     monkeypatch.setattr(jobs_routes, "validate_job_source", lambda **kwargs: "upload")
     res = mounted.post("/api/v1/jobs", data={"auto_repair": "true"})
-    assert res.status_code == 400
-    assert res.json()["detail"] == "file is required."
+    assert res.status_code == 202
+    assert res.json()["job_id"]
 
 
 def test_get_status_route(monkeypatch):
@@ -124,7 +124,7 @@ def test_repair_route(monkeypatch):
 def test_create_job_upload_passes_storage_key(monkeypatch):
     mounted = _mount_client()
     monkeypatch.setattr(jobs_routes, "validate_job_source", lambda **kwargs: "upload")
-    monkeypatch.setattr(jobs_routes.repository_service, "store_uploaded_archive", lambda file: ("repo_1", "uploads/repo_1/repo.zip"))
+    monkeypatch.setattr(jobs_routes, "uuid4", lambda: "repo-uuid")
 
     captured = {}
 
@@ -139,8 +139,19 @@ def test_create_job_upload_passes_storage_key(monkeypatch):
     monkeypatch.setattr(jobs_routes.job_service, "create_job", fake_create_job)
     res = mounted.post(
         "/api/v1/jobs",
-        data={"auto_repair": "false"},
-        files={"file": ("repo.zip", b"abc", "application/zip")},
+        data={"auto_repair": "false", "s3_key": "uploads/repo_1/repo.zip"},
     )
     assert res.status_code == 202
     assert captured["storage_key"] == "uploads/repo_1/repo.zip"
+
+
+def test_request_upload_url_route(monkeypatch):
+    mounted = _mount_client()
+    monkeypatch.setattr(
+        jobs_routes.cloud_manager,
+        "generate_upload_url",
+        lambda user_id, filename: ("https://signed.example/put", "uploads/sub/repo.zip"),
+    )
+    res = mounted.post("/api/v1/jobs/upload-url", json={"filename": "repo.zip"})
+    assert res.status_code == 200
+    assert res.json()["s3_key"] == "uploads/sub/repo.zip"

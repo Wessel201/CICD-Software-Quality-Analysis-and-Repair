@@ -177,7 +177,7 @@ def test_process_payload_routes_repair(monkeypatch, env):
 
     monkeypatch.setattr(worker_main.psycopg, "connect", lambda _: conn)
     monkeypatch.setattr(worker, "_get_job_context", lambda _conn, job_id: {"job_id": job_id, "auto_repair": True})
-    monkeypatch.setattr(worker, "_run_repair_pipeline", lambda *_: observed.setdefault("repair", True))
+    monkeypatch.setattr(worker, "_run_repair_pipeline", lambda *_, **__: observed.setdefault("repair", True))
     monkeypatch.setattr(worker, "_run_analysis_pipeline", lambda *_: observed.setdefault("analyze", True))
 
     worker._process_payload({"job_id": "job_2", "action": "repair"})
@@ -260,7 +260,13 @@ def test_run_analysis_pipeline_with_auto_repair(monkeypatch, env, tmp_path):
     monkeypatch.setattr(worker, "_replace_findings", lambda *_: None)
     monkeypatch.setattr(worker, "_normalize_findings", lambda _: [])
     monkeypatch.setattr(worker_main.Analyzer, "run_all", lambda self: {})
-    monkeypatch.setattr(worker, "_run_repair_pipeline", lambda _conn, _ctx, source_dir=None: called.setdefault("source", source_dir))
+    monkeypatch.setattr(
+        worker,
+        "_run_repair_pipeline",
+        lambda _conn, _ctx, source_dir=None, requested_cycles=None: called.setdefault(
+            "args", (source_dir, requested_cycles)
+        ),
+    )
 
     worker._run_analysis_pipeline(
         conn,
@@ -268,7 +274,8 @@ def test_run_analysis_pipeline_with_auto_repair(monkeypatch, env, tmp_path):
         {"job_id": "job_2", "auto_repair": True},
     )
 
-    assert called["source"] == source_dir
+    assert called["args"][0] == source_dir
+    assert called["args"][1] is None
 
 
 def test_run_analysis_pipeline_failure_marks_failed(monkeypatch, env, tmp_path):
@@ -348,6 +355,60 @@ def test_run_repair_pipeline_failure_marks_failed(monkeypatch, env, tmp_path):
         worker._run_repair_pipeline(conn, {"job_id": "job_6"})
     assert markers["v"][0] == "repair_failed"
     assert not cleanup.exists()
+
+
+def test_run_repair_pipeline_respects_max_cycle_cap(monkeypatch, env, tmp_path):
+    worker, _, _ = _new_worker(monkeypatch)
+    worker.max_repair_cycles = 2
+    conn = FakeConn()
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+
+    steps = []
+    monkeypatch.setattr(worker, "_update_job_state", lambda _c, _j, _s, _p, step: steps.append(step))
+    monkeypatch.setattr(worker_main.Analyzer, "run_all", lambda self: {"bandit": {"results": [{"filename": "x.py", "line_number": 1}]}})
+    monkeypatch.setattr(
+        worker,
+        "_normalize_findings",
+        lambda _raw: [
+            {
+                "tool": "bandit",
+                "rule_id": "B1",
+                "severity": "low",
+                "category": "security",
+                "file": "x.py",
+                "line": 1,
+                "message": "m",
+                "suggestion": "s",
+                "fingerprint": "fp",
+            }
+        ],
+    )
+    monkeypatch.setattr(worker, "_replace_findings", lambda *_: None)
+
+    worker._run_repair_pipeline(
+        conn,
+        {"job_id": "job_cap"},
+        source_dir=source_dir,
+        requested_cycles=10,
+    )
+
+    cycle_steps = [s for s in steps if "cycle_" in s]
+    assert any("cycle_1_of_2" in s for s in cycle_steps)
+    assert any("cycle_2_of_2" in s for s in cycle_steps)
+    assert not any("cycle_3_of_" in s for s in cycle_steps)
+
+
+def test_cycle_parsing_and_bounds(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+    worker.max_repair_cycles = 3
+
+    assert worker._parse_max_repair_cycles("4") == 4
+    assert worker._parse_max_repair_cycles("bad") == 3
+    assert worker._parse_max_repair_cycles(0) == 3
+    assert worker._bounded_repair_cycles(None) == 1
+    assert worker._bounded_repair_cycles("2") == 2
+    assert worker._bounded_repair_cycles("999") == 3
 
 
 def test_prepare_source_github_success(monkeypatch, env, tmp_path):
@@ -521,6 +582,25 @@ def test_normalize_findings_and_severity_helpers(monkeypatch, env):
     assert worker._severity_from_complexity(20) == "high"
 
 
+def test_normalize_findings_with_non_dict_radon(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+    raw = {
+        "bandit": {"results": []},
+        "pylint": [],
+        "radon": ["not", "a", "dict"],
+        "trufflehog": [
+            {
+                "DetectorName": "GENERIC",
+                "SourceMetadata": "not-a-dict",
+            }
+        ],
+    }
+
+    findings = worker._normalize_findings(raw)
+    assert len(findings) == 1
+    assert findings[0]["tool"] == "trufflehog"
+
+
 def test_run_forever_processes_and_deletes(monkeypatch, env):
     worker, _, _ = _new_worker(monkeypatch)
     sequence = iter(
@@ -573,3 +653,25 @@ def test_run_forever_handles_message_failure(monkeypatch, env):
         worker.run_forever()
 
     assert slept["secs"] == 1
+
+
+def test_run_forever_skips_empty_polls(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+    sequence = iter([None, KeyboardInterrupt()])
+    observed = {"processed": 0, "deleted": 0}
+
+    def fake_receive():
+        item = next(sequence)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    monkeypatch.setattr(worker, "_receive_message", fake_receive)
+    monkeypatch.setattr(worker, "_process_payload", lambda payload: observed.__setitem__("processed", observed["processed"] + 1))
+    monkeypatch.setattr(worker, "_delete_message", lambda receipt: observed.__setitem__("deleted", observed["deleted"] + 1))
+
+    with pytest.raises(KeyboardInterrupt):
+        worker.run_forever()
+
+    assert observed["processed"] == 0
+    assert observed["deleted"] == 0

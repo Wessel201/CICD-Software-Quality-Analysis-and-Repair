@@ -47,6 +47,7 @@ class SqsWorker:
 
         self.sqs = boto3.client("sqs", region_name=self.aws_region)
         self.s3 = boto3.client("s3", region_name=self.aws_region)
+        self.max_repair_cycles = self._parse_max_repair_cycles(os.getenv("MAX_REPAIR_CYCLES", "3"))
 
     def run_forever(self) -> None:
         print("Worker started. Waiting for SQS messages...")
@@ -90,9 +91,10 @@ class SqsWorker:
         with psycopg.connect(self.database_url) as conn:
             conn.autocommit = False
             context = self._get_job_context(conn, job_id)
+            requested_cycles = payload.get("max_repair_cycles")
 
             if action == "repair":
-                self._run_repair_pipeline(conn, context)
+                self._run_repair_pipeline(conn, context, requested_cycles=requested_cycles)
             else:
                 self._run_analysis_pipeline(conn, context, payload)
 
@@ -144,7 +146,12 @@ class SqsWorker:
             self._replace_findings(conn, job_id, "before", before_findings)
 
             if auto_repair:
-                self._run_repair_pipeline(conn, context, source_dir=source_dir)
+                self._run_repair_pipeline(
+                    conn,
+                    context,
+                    source_dir=source_dir,
+                    requested_cycles=payload.get("max_repair_cycles"),
+                )
             else:
                 self._update_job_state(conn, job_id, "READY_FOR_REPAIR", 65, "analysis_completed")
         except Exception as exc:
@@ -158,9 +165,11 @@ class SqsWorker:
         conn: psycopg.Connection,
         context: dict[str, Any],
         source_dir: Path | None = None,
+        requested_cycles: Any = None,
     ) -> None:
         job_id = context["job_id"]
         created_locally = False
+        repair_cycles = self._bounded_repair_cycles(requested_cycles)
 
         if source_dir is None:
             source_dir, cleanup_path = self._prepare_source(context)
@@ -169,12 +178,30 @@ class SqsWorker:
             cleanup_path = source_dir.parent
 
         try:
-            self._update_job_state(conn, job_id, "REPAIRING", 80, "applying_llm_repair_balanced")
-            # Placeholder repair: keep source unchanged, run post-repair analysis for consistent API shape.
-            self._update_job_state(conn, job_id, "REANALYZING", 92, "re_running_static_analysis")
-            after_analysis = Analyzer(str(source_dir)).run_all()
-            after_findings = self._normalize_findings(after_analysis)
-            self._replace_findings(conn, job_id, "after", after_findings)
+            after_findings: list[dict[str, Any]] = []
+            for cycle in range(1, repair_cycles + 1):
+                self._update_job_state(
+                    conn,
+                    job_id,
+                    "REPAIRING",
+                    80,
+                    f"applying_llm_repair_balanced_cycle_{cycle}_of_{repair_cycles}",
+                )
+                # Placeholder repair: keep source unchanged, run post-repair analysis for consistent API shape.
+                self._update_job_state(
+                    conn,
+                    job_id,
+                    "REANALYZING",
+                    92,
+                    f"re_running_static_analysis_cycle_{cycle}_of_{repair_cycles}",
+                )
+                after_analysis = Analyzer(str(source_dir)).run_all()
+                after_findings = self._normalize_findings(after_analysis)
+                self._replace_findings(conn, job_id, "after", after_findings)
+
+                if not after_findings:
+                    break
+
             self._update_job_state(conn, job_id, "DONE", 100, "completed")
         except Exception as exc:
             self._mark_failed(conn, job_id, "repair_failed", str(exc))
@@ -402,7 +429,22 @@ class SqsWorker:
             return "medium"
         return "low"
 
+    @staticmethod
+    def _parse_max_repair_cycles(value: Any) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return 3
+        return parsed if parsed > 0 else 3
 
-if __name__ == "__main__":
+    def _bounded_repair_cycles(self, requested_cycles: Any) -> int:
+        if requested_cycles is None:
+            return 1
+
+        parsed = self._parse_max_repair_cycles(requested_cycles)
+        return min(parsed, self.max_repair_cycles)
+
+
+if __name__ == "__main__":  # pragma: no cover
     worker = SqsWorker()
     worker.run_forever()

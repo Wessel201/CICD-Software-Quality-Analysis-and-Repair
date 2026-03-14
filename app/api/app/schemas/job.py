@@ -47,6 +47,16 @@ class JobCreateResponse(BaseModel):
     created_at: datetime
 
 
+class UploadUrlRequest(BaseModel):
+    filename: str
+
+
+class UploadUrlResponse(BaseModel):
+    upload_url: str
+    s3_key: str
+    expires_in_seconds: int = 300
+
+
 class JobStatusResponse(BaseModel):
     job_id: str
     status: JobStatus
