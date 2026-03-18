@@ -15,7 +15,18 @@ async function proxyRequest(
   request: NextRequest,
   context: { params: Promise<{ path: string[] }> },
 ): Promise<Response> {
+  const startedAt = Date.now();
+
   if (!UPSTREAM_API_KEY) {
+    console.error(
+      JSON.stringify({
+        event: "frontend_proxy_error",
+        method: request.method,
+        path: request.nextUrl.pathname,
+        status: 500,
+        message: "Missing API_KEY for upstream proxy",
+      }),
+    );
     return Response.json(
       { detail: "Server is missing API_KEY for upstream API proxy." },
       { status: 500 },
@@ -24,6 +35,16 @@ async function proxyRequest(
 
   const { path } = await context.params;
   const upstreamUrl = buildUpstreamUrl(path, request.nextUrl.search);
+
+  console.info(
+    JSON.stringify({
+      event: "frontend_proxy_request",
+      method: request.method,
+      path: request.nextUrl.pathname,
+      search: request.nextUrl.search,
+      upstream_path: `/${path.join("/")}`,
+    }),
+  );
 
   const headers = new Headers(request.headers);
   headers.set("x-api-key", UPSTREAM_API_KEY);
@@ -35,12 +56,41 @@ async function proxyRequest(
     ? undefined
     : await request.arrayBuffer();
 
-  const upstreamResponse = await fetch(upstreamUrl, {
-    method: request.method,
-    headers,
-    body,
-    redirect: "manual",
-  });
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetch(upstreamUrl, {
+      method: request.method,
+      headers,
+      body,
+      redirect: "manual",
+    });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "frontend_proxy_upstream_unreachable",
+        method: request.method,
+        path: request.nextUrl.pathname,
+        upstream_url: upstreamUrl,
+        duration_ms: Date.now() - startedAt,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+
+    return Response.json(
+      { detail: "Upstream API is unreachable from the frontend proxy." },
+      { status: 502 },
+    );
+  }
+
+  console.info(
+    JSON.stringify({
+      event: "frontend_proxy_response",
+      method: request.method,
+      path: request.nextUrl.pathname,
+      status: upstreamResponse.status,
+      duration_ms: Date.now() - startedAt,
+    }),
+  );
 
   const responseHeaders = new Headers(upstreamResponse.headers);
   responseHeaders.delete("content-encoding");

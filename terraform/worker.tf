@@ -42,6 +42,8 @@ resource "aws_ecs_task_definition" "worker_task" {
         { name = "SQS_QUEUE_URL", value = aws_sqs_queue.job_queue.url },
         { name = "S3_BUCKET_NAME", value = aws_s3_bucket.artifact_storage.bucket },
         { name = "DB_HOST", value = aws_db_instance.metadata_db.address },
+        { name = "DB_NAME", value = aws_db_instance.metadata_db.db_name },
+        { name = "DB_USER", value = aws_db_instance.metadata_db.username },
         { name = "DB_PASSWORD", value = var.db_password },
         { name = "OPENAI_API_KEY", value = var.openai_api_key }
       ]
