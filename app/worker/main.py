@@ -192,7 +192,7 @@ class SqsWorker:
         try:
             self._update_job_state(conn, job_id, "ANALYZING", 50, "running_static_analysis")
             analysis = Analyzer(str(source_dir)).run_all()
-            before_findings = self._normalize_findings(analysis)
+            before_findings = self._normalize_findings(analysis, source_dir)
             self._replace_findings(conn, job_id, "before", before_findings)
 
             if auto_repair:
@@ -255,7 +255,7 @@ class SqsWorker:
                     f"re_running_static_analysis_cycle_{cycle}_of_{repair_cycles}",
                 )
                 after_analysis = Analyzer(str(source_dir)).run_all()
-                after_findings = self._normalize_findings(after_analysis)
+                after_findings = self._normalize_findings(after_analysis, source_dir)
                 self._replace_findings(conn, job_id, "after", after_findings)
 
                 if not after_findings:
@@ -427,11 +427,19 @@ class SqsWorker:
                 (step, message[:4000], job_id),
             )
 
-    def _normalize_findings(self, raw_results: dict[str, Any]) -> list[dict[str, Any]]:
+    def _normalize_findings(self, raw_results: dict[str, Any], source_dir: Path) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
 
+        def make_relative(path_str: str) -> str:
+            if not path_str:
+                return path_str
+            try:
+                return str(Path(path_str).resolve().relative_to(source_dir.resolve()))
+            except ValueError:
+                return path_str
+
         for issue in raw_results.get("bandit", {}).get("results", []):
-            file_path = str(issue.get("filename", ""))
+            file_path = make_relative(str(issue.get("filename", "")))
             line = int(issue.get("line_number", 0) or 0)
             rule = str(issue.get("test_id", "BANDIT"))
             message = str(issue.get("issue_text", "Security issue detected."))
@@ -450,7 +458,7 @@ class SqsWorker:
             )
 
         for issue in raw_results.get("pylint", []):
-            file_path = str(issue.get("path", ""))
+            file_path = make_relative(str(issue.get("path", "")))
             line = int(issue.get("line", 0) or 0)
             rule = str(issue.get("message-id", "PYLINT"))
             findings.append(
@@ -469,9 +477,10 @@ class SqsWorker:
 
         radon_payload = raw_results.get("radon", {})
         if isinstance(radon_payload, dict):
-            for file_path, blocks in radon_payload.items():
+            for raw_file_path, blocks in radon_payload.items():
                 if not isinstance(blocks, list):
                     continue
+                file_path = make_relative(str(raw_file_path))
                 for block in blocks:
                     complexity = int(block.get("complexity", 0) or 0)
                     line = int(block.get("lineno", 0) or 0)
@@ -481,7 +490,7 @@ class SqsWorker:
                             "rule_id": "CC",
                             "severity": self._severity_from_complexity(complexity),
                             "category": "complexity",
-                            "file": str(file_path),
+                            "file": file_path,
                             "line": line,
                             "message": f"Cyclomatic complexity is {complexity} for {block.get('name', 'block')}.",
                             "suggestion": "Split logic into smaller functions.",
@@ -493,7 +502,7 @@ class SqsWorker:
             source_metadata = issue.get("SourceMetadata", {})
             source_data = source_metadata.get("Data", {}) if isinstance(source_metadata, dict) else {}
             fs_data = source_data.get("Filesystem", {}) if isinstance(source_data, dict) else {}
-            file_path = str(fs_data.get("file", ""))
+            file_path = make_relative(str(fs_data.get("file", "")))
             line = int(fs_data.get("line", 0) or 0)
             rule = str(issue.get("DetectorName", "TRUFFLEHOG"))
             findings.append(
