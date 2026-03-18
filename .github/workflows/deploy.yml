@@ -37,8 +37,9 @@ jobs:
       - name: Terraform Init & Apply
         working-directory: ./terraform
         env:
-          # Securely inject the database password we discussed earlier
+          # Securely inject BOTH sensitive variables for Terraform
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
         run: |
           terraform init
           terraform apply -auto-approve
@@ -52,7 +53,7 @@ jobs:
       - name: Build and Push API Image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }} # Uses the Git commit hash as the version
+          IMAGE_TAG: ${{ github.sha }}
         run: |
           cd app/api
           docker build -t $REGISTRY/$API_ECR_REPO:$IMAGE_TAG -t $REGISTRY/$API_ECR_REPO:latest .
@@ -68,11 +69,52 @@ jobs:
           docker build -t $REGISTRY/$WORKER_ECR_REPO:$IMAGE_TAG -t $REGISTRY/$WORKER_ECR_REPO:latest .
           docker push -a $REGISTRY/$WORKER_ECR_REPO
 
-      # 7. Force ECS to deploy the newly pushed containers
-      - name: Force ECS API Deployment
+      # ---------------------------------------------------
+      # 7. PROPER ECS DEPLOYMENT FOR API
+      # ---------------------------------------------------
+      - name: Download current API task definition
         run: |
-          aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} --service api-service --force-new-deployment
+          aws ecs describe-task-definition \
+            --task-definition api-task \
+            --query taskDefinition > api-task-def.json
 
-      - name: Force ECS Worker Deployment
+      - name: Render new API image into task definition
+        id: render-api-task
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: api-task-def.json
+          container-name: api-container
+          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.API_ECR_REPO }}:${{ github.sha }}
+
+      - name: Deploy API to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-api-task.outputs.task-definition }}
+          service: api-service
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      # ---------------------------------------------------
+      # 8. PROPER ECS DEPLOYMENT FOR WORKER
+      # ---------------------------------------------------
+      - name: Download current Worker task definition
         run: |
-          aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} --service worker-service --force-new-deployment
+          aws ecs describe-task-definition \
+            --task-definition worker-task \
+            --query taskDefinition > worker-task-def.json
+
+      - name: Render new Worker image into task definition
+        id: render-worker-task
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: worker-task-def.json
+          container-name: worker-container
+          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}
+
+      - name: Deploy Worker to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-worker-task.outputs.task-definition }}
+          service: worker-service
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
