@@ -1,7 +1,25 @@
 import type { Job, JobListItem, JobResult, ApiJobStatus } from "../types";
 
 // get api base from env var, or default to localhost for development
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/proxy";
+const ENV_API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "").trim();
+
+export const API_BASE = (() => {
+  if (!ENV_API_BASE) return "/api/proxy";
+
+  if (
+    typeof window !== "undefined" &&
+    window.location.protocol === "https:" &&
+    ENV_API_BASE.startsWith("http://")
+  ) {
+    console.warn(
+      "[API] NEXT_PUBLIC_API_BASE uses http on an https page. Falling back to /api/proxy to avoid mixed-content failures.",
+      { configuredApiBase: ENV_API_BASE },
+    );
+    return "/api/proxy";
+  }
+
+  return ENV_API_BASE;
+})();
 
 // ── Status normalisation ──────────────────────────────────────────────────────
 // Maps the API's multi-step uppercase statuses to the four frontend states.
