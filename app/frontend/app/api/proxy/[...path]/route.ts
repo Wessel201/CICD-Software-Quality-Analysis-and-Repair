@@ -56,12 +56,31 @@ async function proxyRequest(
     ? undefined
     : await request.arrayBuffer();
 
-  const upstreamResponse = await fetch(upstreamUrl, {
-    method: request.method,
-    headers,
-    body,
-    redirect: "manual",
-  });
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetch(upstreamUrl, {
+      method: request.method,
+      headers,
+      body,
+      redirect: "manual",
+    });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "frontend_proxy_upstream_unreachable",
+        method: request.method,
+        path: request.nextUrl.pathname,
+        upstream_url: upstreamUrl,
+        duration_ms: Date.now() - startedAt,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+
+    return Response.json(
+      { detail: "Upstream API is unreachable from the frontend proxy." },
+      { status: 502 },
+    );
+  }
 
   console.info(
     JSON.stringify({

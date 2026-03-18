@@ -36,22 +36,59 @@ export async function createJob(
   const form = new FormData();
   form.append("auto_repair", "false");
   if (file) {
-    const uploadUrlRes = await fetch(`${API_BASE}/api/v1/jobs/upload-url`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name }),
-    });
+    let uploadUrlRes: Response;
+    try {
+      uploadUrlRes = await fetch(`${API_BASE}/api/v1/jobs/upload-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name }),
+      });
+    } catch (error) {
+      console.error("[API] upload-url request failed", {
+        stage: "upload_url",
+        endpoint: `${API_BASE}/api/v1/jobs/upload-url`,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw new Error("Failed to reach API while requesting upload URL.");
+    }
+
     if (!uploadUrlRes.ok) {
-      throw new Error(`Upload URL error ${uploadUrlRes.status}`);
+      const responseText = await uploadUrlRes.text().catch(() => "");
+      console.error("[API] upload-url request returned non-OK", {
+        stage: "upload_url",
+        status: uploadUrlRes.status,
+        body: responseText,
+      });
+      throw new Error(`Upload URL error ${uploadUrlRes.status}: ${responseText || "no response body"}`);
     }
     const uploadData = await uploadUrlRes.json();
 
-    const s3Upload = await fetch(uploadData.upload_url, {
-      method: "PUT",
-      body: file,
-      headers: { "Content-Type": file.type || "application/octet-stream" },
-    });
+    let s3Upload: Response;
+    try {
+      s3Upload = await fetch(uploadData.upload_url, {
+        method: "PUT",
+        body: file,
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+      });
+    } catch (error) {
+      console.error("[API] direct upload to storage failed", {
+        stage: "s3_put",
+        uploadHost:
+          typeof uploadData.upload_url === "string"
+            ? new URL(uploadData.upload_url).host
+            : "unknown",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw new Error("Failed to upload archive to storage URL (network/CORS). Check browser network tab.");
+    }
+
     if (!s3Upload.ok) {
+      const s3ResponseText = await s3Upload.text().catch(() => "");
+      console.error("[API] direct upload returned non-OK", {
+        stage: "s3_put",
+        status: s3Upload.status,
+        body: s3ResponseText,
+      });
       throw new Error(`S3 upload failed ${s3Upload.status}`);
     }
 
@@ -69,12 +106,28 @@ export async function createJob(
       github_url: githubUrl,
     });
   }
-  const res = await fetch(`${API_BASE}/api/v1/jobs`, {
-    method: "POST",
-    body: form,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/api/v1/jobs`, {
+      method: "POST",
+      body: form,
+    });
+  } catch (error) {
+    console.error("[API] create job request failed", {
+      stage: "job_create",
+      endpoint: `${API_BASE}/api/v1/jobs`,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw new Error("Failed to reach API while creating job.");
+  }
+
   if (!res.ok) {
     const body = await res.json().catch(() => null);
+    console.error("[API] create job returned non-OK", {
+      stage: "job_create",
+      status: res.status,
+      body,
+    });
     throw new Error(body?.detail ?? `Server error ${res.status}`);
   }
   const raw = await res.json();
