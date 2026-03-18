@@ -3,12 +3,14 @@ from uuid import uuid4
 import os
 from pathlib import Path
 import json
+import logging
 
 from fastapi import HTTPException
 
 from app.db.models import AnalysisPhase, JobStatusDb
 from app.db.init_db import init_db
 from app.db.session import SessionLocal
+from app.cloud import CloudQualityManager
 from app.repositories.job_repository import JobRepository
 from app.services.analyzer_runner import AnalyzerRunner
 from app.schemas.job import Finding, JobCreateResponse, JobListItem, JobListResponse, JobResultsResponse, JobStatus, JobStatusResponse, JobSummary, PatchInfo
@@ -30,26 +32,43 @@ class JobService:
 
     def __init__(self, analyzer_runner: AnalyzerRunner | None = None) -> None:
         self.analyzer_runner = analyzer_runner or AnalyzerRunner()
+        self.cloud_manager = CloudQualityManager()
+        self.logger = logging.getLogger(__name__)
 
-    def create_job(self, source_type: str, source_reference: str, auto_repair: bool, github_url: str | None = None) -> JobCreateResponse:
+    def create_job(
+        self,
+        source_type: str,
+        source_reference: str,
+        auto_repair: bool,
+        github_url: str | None = None,
+        storage_key: str | None = None,
+    ) -> JobCreateResponse:
         job_id = f"job_{uuid4().hex[:12]}"
         created_at = None
+        self.logger.info("Creating job", extra={"event": "job_create_start", "job_id": job_id})
 
         with self._lock:
             with SessionLocal() as session:
                 repository = JobRepository(session)
-                repository.upsert_repository(repository_id=source_reference, source_type=source_type, github_url=github_url)
+                repository.upsert_repository(
+                    repository_id=source_reference,
+                    source_type=source_type,
+                    github_url=github_url,
+                    storage_key=storage_key,
+                )
                 job = repository.create_job(job_id=job_id, repository_id=source_reference, auto_repair=auto_repair)
                 created_at = job.created_at
                 session.commit()
 
         self.dispatch_analysis_pipeline(job_id=job_id, auto_repair=auto_repair)
+        self.logger.info("Dispatched analysis pipeline", extra={"event": "job_analysis_dispatched", "job_id": job_id})
 
         current_status = self.get_job_status(job_id)
 
         if created_at is None:
             raise HTTPException(status_code=500, detail="Failed to persist job creation timestamp.")
 
+        self.logger.info("Job creation complete", extra={"event": "job_create_complete", "job_id": job_id, "status": current_status.status})
         return JobCreateResponse(job_id=job_id, status=current_status.status, created_at=created_at)
 
     def get_job_status(self, job_id: str) -> JobStatusResponse:
@@ -65,11 +84,13 @@ class JobService:
             )
 
     def delete_job(self, job_id: str) -> None:
+        self.logger.info("Deleting job", extra={"event": "job_delete_start", "job_id": job_id})
         with self._lock:
             with SessionLocal() as session:
                 repository = JobRepository(session)
                 repository.delete_job(job_id)
                 session.commit()
+        self.logger.info("Job deleted", extra={"event": "job_delete_complete", "job_id": job_id})
 
     def list_recent_jobs(self, limit: int = 50) -> JobListResponse:
         with SessionLocal() as session:
@@ -78,7 +99,7 @@ class JobService:
 
         jobs: list[JobListItem] = []
         for s in snapshots:
-            # For upload jobs, storage_key is the UUID — try to find the real filename on disk
+            # For local upload jobs, resolve UUID folder to human-friendly archive filename.
             label = s.source_label
             if label and not label.startswith("http") and "/" not in label:
                 # Looks like a UUID storage_key; resolve filename from disk
@@ -168,11 +189,18 @@ class JobService:
         filename = f"{job_id}_{phase}_source.zip"
         return zip_bytes, filename
 
-    def get_job_artifact_download(self, job_id: str, artifact_id: int) -> tuple[Path, str | None]:
+    def get_job_artifact_download(self, job_id: str, artifact_id: int) -> tuple[str | Path, str | None]:
         with SessionLocal() as session:
             repository = JobRepository(session)
             repository.get_job_snapshot(job_id)
             artifact = repository.get_artifact_for_job(job_id=job_id, artifact_id=artifact_id)
+
+        if artifact.storage_key.startswith("s3://"):
+            storage_key = artifact.storage_key.removeprefix("s3://")
+            return self.cloud_manager.generate_download_url(storage_key), artifact.content_type
+
+        if artifact.storage_key.startswith("uploads/") and os.getenv("S3_BUCKET_NAME"):
+            return self.cloud_manager.generate_download_url(artifact.storage_key), artifact.content_type
 
         artifact_path = Path(artifact.storage_key)
         if not artifact_path.is_absolute():
@@ -190,6 +218,7 @@ class JobService:
         return artifact_path, artifact.content_type
 
     def trigger_repair(self, job_id: str, repair_strategy: str) -> JobStatusResponse:
+        self.logger.info("Trigger repair requested", extra={"event": "job_repair_trigger", "job_id": job_id})
         with self._lock:
             with SessionLocal() as session:
                 repository = JobRepository(session)
@@ -217,34 +246,40 @@ class JobService:
                 session.commit()
 
         self.dispatch_repair_pipeline(job_id=job_id, repair_strategy=repair_strategy)
+        self.logger.info("Repair dispatched", extra={"event": "job_repair_dispatched", "job_id": job_id})
         return self.get_job_status(job_id)
 
     def dispatch_analysis_pipeline(self, job_id: str, auto_repair: bool) -> None:
-        if os.getenv("CELERY_TASK_ALWAYS_EAGER", "true").lower() == "true":
+        if not os.getenv("SQS_QUEUE_URL"):
+            self.logger.info("Running analysis inline", extra={"event": "job_analysis_inline", "job_id": job_id})
             self.run_analysis_pipeline(job_id=job_id, auto_repair=auto_repair)
             return
 
-        try:
-            from app.workers.job_tasks import run_analysis_pipeline_task
-
-            run_analysis_pipeline_task.delay(job_id=job_id, auto_repair=auto_repair)
-        except Exception:
-            self.run_analysis_pipeline(job_id=job_id, auto_repair=auto_repair)
+        self.cloud_manager.submit_job(
+            {
+                "job_id": job_id,
+                "action": "analyze",
+                "auto_repair": auto_repair,
+            }
+        )
 
     def dispatch_repair_pipeline(self, job_id: str, repair_strategy: str) -> None:
-        if os.getenv("CELERY_TASK_ALWAYS_EAGER", "true").lower() == "true":
+        if not os.getenv("SQS_QUEUE_URL"):
+            self.logger.info("Running repair inline", extra={"event": "job_repair_inline", "job_id": job_id})
             self.run_repair_pipeline(job_id=job_id, repair_strategy=repair_strategy)
             return
 
-        try:
-            from app.workers.job_tasks import run_repair_pipeline_task
-
-            run_repair_pipeline_task.delay(job_id=job_id, repair_strategy=repair_strategy)
-        except Exception:
-            self.run_repair_pipeline(job_id=job_id, repair_strategy=repair_strategy)
+        self.cloud_manager.submit_job(
+            {
+                "job_id": job_id,
+                "action": "repair",
+                "repair_strategy": repair_strategy,
+            }
+        )
 
     def run_analysis_pipeline(self, job_id: str, auto_repair: bool) -> None:
         try:
+            self.logger.info("Analysis pipeline started", extra={"event": "analysis_pipeline_start", "job_id": job_id})
             with self._lock:
                 with SessionLocal() as session:
                     repository = JobRepository(session)
@@ -274,7 +309,9 @@ class JobService:
 
                     self._transition(repository, job_id, JobStatusDb.READY_FOR_REPAIR, 65, "analysis_completed")
                     session.commit()
+            self.logger.info("Analysis pipeline completed", extra={"event": "analysis_pipeline_complete", "job_id": job_id})
         except Exception as exc:
+            self.logger.exception("Analysis pipeline failed", extra={"event": "analysis_pipeline_failed", "job_id": job_id})
             self._mark_failed(job_id=job_id, step="analysis_failed", message=str(exc))
             return
 
@@ -283,6 +320,7 @@ class JobService:
 
     def run_repair_pipeline(self, job_id: str, repair_strategy: str = "balanced") -> None:
         try:
+            self.logger.info("Repair pipeline started", extra={"event": "repair_pipeline_start", "job_id": job_id})
             with self._lock:
                 with SessionLocal() as session:
                     repository = JobRepository(session)
@@ -332,7 +370,9 @@ class JobService:
 
                     self._transition(repository, job_id, JobStatusDb.DONE, 100, "completed")
                     session.commit()
+            self.logger.info("Repair pipeline completed", extra={"event": "repair_pipeline_complete", "job_id": job_id, "status": "DONE"})
         except Exception as exc:
+            self.logger.exception("Repair pipeline failed", extra={"event": "repair_pipeline_failed", "job_id": job_id})
             self._mark_failed(job_id=job_id, step="repair_failed", message=str(exc))
 
     def _write_analysis_artifacts(
@@ -382,6 +422,10 @@ class JobService:
                 detail=f"Invalid job transition: {snapshot.status.value} -> {next_status.value}",
             )
 
+        self.logger.info(
+            "Job state transition",
+            extra={"event": "job_state_transition", "job_id": job_id, "status": next_status.value},
+        )
         repository.update_job_state(
             job_id=job_id,
             status=next_status,
@@ -390,6 +434,10 @@ class JobService:
         )
 
     def _mark_failed(self, job_id: str, step: str, message: str) -> None:
+        self.logger.error(
+            "Marking job failed",
+            extra={"event": "job_mark_failed", "job_id": job_id, "status": "FAILED"},
+        )
         with self._lock:
             with SessionLocal() as session:
                 repository = JobRepository(session)

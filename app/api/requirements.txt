@@ -8,3 +8,4 @@ psycopg[binary]==3.2.9
 bandit==1.7.10
 ruff==0.12.10
 radon==6.0.1
+boto3==1.40.14

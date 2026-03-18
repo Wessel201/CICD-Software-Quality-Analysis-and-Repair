@@ -1,6 +1,7 @@
 import type { Job, JobListItem, JobResult, ApiJobStatus } from "../types";
 
-export const API_BASE = "http://localhost:8000";
+// get api base from env var, or default to localhost for development
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
 // ── Status normalisation ──────────────────────────────────────────────────────
 // Maps the API's multi-step uppercase statuses to the four frontend states.
@@ -35,11 +36,31 @@ export async function createJob(
   const form = new FormData();
   form.append("auto_repair", "false");
   if (file) {
-    form.append("file", file);
+    const uploadUrlRes = await fetch(`${API_BASE}/api/v1/jobs/upload-url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name }),
+    });
+    if (!uploadUrlRes.ok) {
+      throw new Error(`Upload URL error ${uploadUrlRes.status}`);
+    }
+    const uploadData = await uploadUrlRes.json();
+
+    const s3Upload = await fetch(uploadData.upload_url, {
+      method: "PUT",
+      body: file,
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+    });
+    if (!s3Upload.ok) {
+      throw new Error(`S3 upload failed ${s3Upload.status}`);
+    }
+
+    form.append("s3_key", uploadData.s3_key);
     console.log("[API] POST /api/v1/jobs", {
-      type: "file",
+      type: "direct_s3_upload",
       fileName: file.name,
       size: file.size,
+      s3_key: uploadData.s3_key,
     });
   } else {
     form.append("github_url", githubUrl);

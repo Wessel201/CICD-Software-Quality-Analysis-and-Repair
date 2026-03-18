@@ -1,0 +1,55 @@
+name: Test Coverage Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - integration
+
+jobs:
+  api-tests:
+    name: API 100 percent coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install API dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/api/requirements.txt -r app/api/requirements-dev.txt
+
+      - name: Run API tests
+        working-directory: app/api
+        run: pytest
+
+  worker-tests:
+    name: Worker 100 percent coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Worker dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/worker/requirements.txt
+
+      - name: Run Worker tests
+        working-directory: app/worker
+        run: pytest

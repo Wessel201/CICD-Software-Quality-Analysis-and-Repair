@@ -1,6 +1,7 @@
 from pathlib import Path
 from shutil import rmtree
 import subprocess
+import os
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -8,6 +9,7 @@ from uuid import uuid4
 import json
 
 from fastapi import HTTPException, UploadFile
+import boto3
 
 
 class RepositoryService:
@@ -18,6 +20,8 @@ class RepositoryService:
 
     def __init__(self, uploads_dir: Path | None = None) -> None:
         self.uploads_dir = uploads_dir or Path("uploads")
+        self.bucket_name = os.getenv("S3_BUCKET_NAME")
+        self.aws_region = os.getenv("AWS_REGION", "eu-central-1")
 
     def is_supported_archive(self, filename: str) -> bool:
         lowercase_name = filename.lower()
@@ -25,6 +29,10 @@ class RepositoryService:
 
     def store_uploaded_archive(self, file: UploadFile) -> tuple[str, str]:
         submission_id = str(uuid4())
+
+        if self.bucket_name:
+            return self._store_archive_to_s3(file=file, submission_id=submission_id)
+
         destination_dir = self.uploads_dir / submission_id
         destination_dir.mkdir(parents=True, exist_ok=True)
 
@@ -52,6 +60,29 @@ class RepositoryService:
             raise
 
         return submission_id, destination_file.name
+
+    def _store_archive_to_s3(self, file: UploadFile, submission_id: str) -> tuple[str, str]:
+        filename = str(file.filename or "repository.zip")
+        lowercase_name = filename.lower()
+        if not any(lowercase_name.endswith(ext) for ext in self.ALLOWED_ARCHIVE_EXTENSIONS):
+            raise HTTPException(status_code=400, detail="Uploaded file must be a supported archive format.")
+
+        file.file.seek(0, 2)
+        total_size = file.file.tell()
+        file.file.seek(0)
+        if total_size > self.MAX_REPOSITORY_SIZE_BYTES:
+            raise HTTPException(status_code=400, detail="Repository archive exceeds maximum allowed size of 100 MB.")
+
+        s3_key = f"uploads/{submission_id}/{filename.replace('/', '_').replace('..', '_')}"
+        s3_client = boto3.client("s3", region_name=self.aws_region)
+        try:
+            s3_client.upload_fileobj(file.file, self.bucket_name, s3_key)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Failed to upload repository archive to S3.") from exc
+        finally:
+            file.file.seek(0)
+
+        return submission_id, s3_key
 
     def clone_public_repository(self, repo_url: str) -> tuple[str, str]:
         self._validate_github_repo_size_limit(repo_url)

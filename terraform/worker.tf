@@ -41,13 +41,15 @@ resource "aws_ecs_task_definition" "worker_task" {
       environment = [
         { name = "SQS_QUEUE_URL", value = aws_sqs_queue.job_queue.url },
         { name = "S3_BUCKET_NAME", value = aws_s3_bucket.artifact_storage.bucket },
-        { name = "DB_HOST", value = aws_db_instance.metadata_db.address }
+        { name = "DB_HOST", value = aws_db_instance.metadata_db.address },
+        { name = "DB_PASSWORD", value = var.db_password },
+        { name = "OPENAI_API_KEY", value = var.openai_api_key }
       ]
 
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          "awslogs-group"         = "/ecs/worker"
+          "awslogs-group"         = aws_cloudwatch_log_group.worker_logs.name
           "awslogs-region"        = "eu-central-1"
           "awslogs-stream-prefix" = "ecs"
         }

@@ -91,12 +91,13 @@ def test_create_job_rejects_missing_source() -> None:
 
 
 def test_create_job_rejects_both_sources(monkeypatch) -> None:
-    monkeypatch.setattr(jobs_routes.repository_service, "is_supported_archive", lambda _: True)
-
     response = client.post(
         "/api/v1/jobs",
-        data={"github_url": "https://github.com/acme/repo", "auto_repair": "true"},
-        files={"file": ("repo.zip", b"abc", "application/zip")},
+        data={
+            "github_url": "https://github.com/acme/repo",
+            "s3_key": "uploads/submission/repo.zip",
+            "auto_repair": "true",
+        },
     )
 
     assert response.status_code == 400
@@ -128,12 +129,6 @@ def test_create_job_from_github_url_auto_repair(monkeypatch) -> None:
 
 
 def test_create_job_from_upload_then_repair(monkeypatch) -> None:
-    monkeypatch.setattr(jobs_routes.repository_service, "is_supported_archive", lambda _: True)
-    monkeypatch.setattr(
-        jobs_routes.repository_service,
-        "store_uploaded_archive",
-        lambda _: ("repository-2", "repo.zip"),
-    )
     monkeypatch.setattr(
         jobs_routes.job_service.analyzer_runner,
         "analyze_repository_with_reports",
@@ -142,8 +137,7 @@ def test_create_job_from_upload_then_repair(monkeypatch) -> None:
 
     create_response = client.post(
         "/api/v1/jobs",
-        data={"auto_repair": "false"},
-        files={"file": ("repo.zip", b"abc", "application/zip")},
+        data={"auto_repair": "false", "s3_key": "uploads/repository-2/repo.zip"},
     )
 
     assert create_response.status_code == 202
@@ -197,3 +191,41 @@ def test_create_job_from_upload_then_repair(monkeypatch) -> None:
     assert download_response.status_code == 200
     assert download_response.headers["content-type"].startswith("application/json")
     assert "tool" in download_response.text
+
+
+def test_download_artifact_redirects_for_presigned_urls(monkeypatch) -> None:
+    monkeypatch.setattr(
+        jobs_routes.job_service,
+        "get_job_artifact_download",
+        lambda job_id, artifact_id: ("https://signed.example/download", "application/json"),
+    )
+
+    response = client.get("/api/v1/jobs/job_123/artifacts/9/download", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "https://signed.example/download"
+
+
+def test_request_upload_url(monkeypatch) -> None:
+    monkeypatch.setattr(
+        jobs_routes.cloud_manager,
+        "generate_upload_url",
+        lambda user_id, filename: ("https://signed.example/put", "uploads/sub/repo.zip"),
+    )
+    response = client.post("/api/v1/jobs/upload-url", json={"filename": "repo.zip"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["upload_url"] == "https://signed.example/put"
+    assert payload["s3_key"] == "uploads/sub/repo.zip"
+
+
+def test_create_job_rejects_direct_file_upload(monkeypatch) -> None:
+    response = client.post(
+        "/api/v1/jobs",
+        data={"auto_repair": "false"},
+        files={"file": ("repo.zip", b"abc", "application/zip")},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["detail"]["error"]["code"] == "DIRECT_UPLOAD_REQUIRED"

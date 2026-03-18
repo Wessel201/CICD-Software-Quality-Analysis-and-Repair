@@ -42,16 +42,25 @@ class JobRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def upsert_repository(self, repository_id: str, source_type: str, github_url: str | None = None) -> RepositoryModel:
+    def upsert_repository(
+        self,
+        repository_id: str,
+        source_type: str,
+        github_url: str | None = None,
+        storage_key: str | None = None,
+    ) -> RepositoryModel:
         repository = self.session.get(RepositoryModel, repository_id)
         if repository is None:
             repository = RepositoryModel(
                 id=repository_id,
                 source_type=SourceType(source_type),
                 github_url=github_url if source_type == SourceType.GITHUB_URL.value else None,
-                storage_key=repository_id if source_type == SourceType.UPLOAD.value else None,
+                storage_key=storage_key if source_type == SourceType.UPLOAD.value else None,
             )
             self.session.add(repository)
+            self.session.flush()
+        elif source_type == SourceType.UPLOAD.value and storage_key:
+            repository.storage_key = storage_key
             self.session.flush()
         return repository
 
