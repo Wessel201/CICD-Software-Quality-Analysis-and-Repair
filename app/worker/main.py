@@ -434,6 +434,7 @@ class SqsWorker:
             file_path = str(issue.get("filename", ""))
             line = int(issue.get("line_number", 0) or 0)
             rule = str(issue.get("test_id", "BANDIT"))
+            message = str(issue.get("issue_text", "Security issue detected."))
             findings.append(
                 {
                     "tool": "bandit",
@@ -442,8 +443,8 @@ class SqsWorker:
                     "category": "security",
                     "file": file_path,
                     "line": line,
-                    "message": str(issue.get("issue_text", "Security issue detected.")),
-                    "suggestion": "Review and remediate the reported security issue.",
+                    "message": message,
+                    "suggestion": self._suggest_bandit_remediation(rule, message),
                     "fingerprint": f"bandit:{rule}:{file_path}:{line}",
                 }
             )
@@ -525,6 +526,26 @@ class SqsWorker:
         if complexity >= 10:
             return "medium"
         return "low"
+
+    @staticmethod
+    def _suggest_bandit_remediation(rule_id: str, issue_text: str) -> str:
+        normalized_rule = rule_id.strip().upper()
+        issue_lower = issue_text.lower()
+
+        if normalized_rule == "B324" or "sha1" in issue_lower or "weak hash" in issue_lower:
+            return (
+                "Replace SHA1 with a collision-resistant hash such as SHA-256 (hashlib.sha256). "
+                "If the hash is not security-relevant and must remain for compatibility, pass "
+                "usedforsecurity=False and document the rationale."
+            )
+
+        if "md5" in issue_lower:
+            return (
+                "Replace MD5 with a stronger hash such as SHA-256 (hashlib.sha256) for security "
+                "sensitive use cases."
+            )
+
+        return "Review and remediate the reported security issue."
 
     @staticmethod
     def _parse_max_repair_cycles(value: Any) -> int:

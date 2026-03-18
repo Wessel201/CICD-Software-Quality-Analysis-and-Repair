@@ -152,6 +152,7 @@ class JobService:
             summary = self._build_summary(before, after)
             return JobResultsResponse(
                 job_id=job_id,
+                status=JobStatus(snapshot.status.value),
                 summary=summary,
                 before=before,
                 after=after,
