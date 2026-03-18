@@ -55,32 +55,58 @@ resource "aws_security_group" "nat_sg" {
 resource "aws_route" "private_nat_route_1" {
   route_table_id         = module.vpc.private_route_table_ids[0]
   destination_cidr_block = "0.0.0.0/0"
-  network_interface_id   = aws_instance.nat_instance.primary_network_interface_id
+  instance_id            = aws_instance.nat_instance.id
 }
 
 resource "aws_route" "private_nat_route_2" {
   route_table_id         = module.vpc.private_route_table_ids[1]
   destination_cidr_block = "0.0.0.0/0"
-  network_interface_id   = aws_instance.nat_instance.primary_network_interface_id
+  instance_id            = aws_instance.nat_instance.id
 }
 
 
 resource "aws_instance" "nat_instance" {
-  ami           = data.aws_ami.amazon_linux_2023.id
-  instance_type = "t3.micro"
-  subnet_id     = module.vpc.public_subnets[0]
+  ami                         = data.aws_ami.amazon_linux_2023.id
+  instance_type               = "t3.micro"
+  subnet_id                   = module.vpc.public_subnets[0]
+  associate_public_ip_address = true
   vpc_security_group_ids = [aws_security_group.nat_sg.id]
-  source_dest_check = false
+  source_dest_check    = false
   user_data = <<-EOF
     #!/bin/bash
-    echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.d/custom-ip-forwarding.conf
-    sysctl -p /etc/sysctl.d/custom-ip-forwarding.conf
-    /sbin/iptables -t nat -A POSTROUTING -o enX0 -j MASQUERADE
-    /sbin/iptables -F FORWARD
-    service iptables save
+    set -euxo pipefail
+
+    dnf install -y iptables-services
+
+    cat >/etc/sysctl.d/99-nat-forwarding.conf <<'SYSCTL'
+    net.ipv4.ip_forward = 1
+    SYSCTL
+    sysctl --system
+
+    OUT_IFACE=$(ip -o -4 route show to default | awk '{print $5; exit}')
+    /sbin/iptables -t nat -A POSTROUTING -o "$OUT_IFACE" -j MASQUERADE
+    /sbin/iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    /sbin/iptables -A FORWARD -s 10.0.0.0/16 -j ACCEPT
+
+    /sbin/iptables-save > /etc/sysconfig/iptables
+    systemctl enable iptables
+    systemctl restart iptables
   EOF
 
   tags = {
     Name = "cheap-nat-instance"
   }
+}
+
+resource "aws_eip" "nat_eip" {
+  domain = "vpc"
+
+  tags = {
+    Name = "cheap-nat-eip"
+  }
+}
+
+resource "aws_eip_association" "nat_eip_association" {
+  allocation_id = aws_eip.nat_eip.id
+  instance_id   = aws_instance.nat_instance.id
 }
