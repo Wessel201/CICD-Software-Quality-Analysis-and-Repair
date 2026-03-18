@@ -119,6 +119,9 @@ jobs:
           # API_KEY remains server-only; never expose it as NEXT_PUBLIC_*.
           upsert_vercel_env "API_KEY" "$API_KEY_SECRET"
 
+          # Frontend should call the internal Next.js proxy route, not ALB directly.
+          upsert_vercel_env "NEXT_PUBLIC_API_BASE" "/api/proxy"
+
       # 4. Log in to Amazon Elastic Container Registry (ECR)
       - name: Login to Amazon ECR
         id: login-ecr

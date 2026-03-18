@@ -1,7 +1,32 @@
 import type { Job, JobListItem, JobResult, ApiJobStatus } from "../types";
 
 // get api base from env var, or default to localhost for development
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/proxy";
+const ENV_API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "").trim();
+
+export const API_BASE = (() => {
+  if (!ENV_API_BASE) return "/api/proxy";
+
+  if (
+    typeof window !== "undefined" &&
+    window.location.protocol === "https:" &&
+    ENV_API_BASE.startsWith("http://")
+  ) {
+    console.warn(
+      "[API] NEXT_PUBLIC_API_BASE uses http on an https page. Falling back to /api/proxy to avoid mixed-content failures.",
+      { configuredApiBase: ENV_API_BASE },
+    );
+    return "/api/proxy";
+  }
+
+  return ENV_API_BASE;
+})();
+
+function createClientRequestId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
 
 // ── Status normalisation ──────────────────────────────────────────────────────
 // Maps the API's multi-step uppercase statuses to the four frontend states.
@@ -33,9 +58,23 @@ export async function createJob(
   file: File | null,
   githubUrl: string,
 ): Promise<Job> {
+  const requestId = createClientRequestId();
   const form = new FormData();
   form.append("auto_repair", "false");
+  console.info("[API] createJob start", {
+    requestId,
+    apiBase: API_BASE,
+    hasFile: Boolean(file),
+    githubUrl: githubUrl || undefined,
+  });
   if (file) {
+    console.info("[API] requesting upload URL", {
+      requestId,
+      endpoint: `${API_BASE}/api/v1/jobs/upload-url`,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type || "application/octet-stream",
+    });
     let uploadUrlRes: Response;
     try {
       uploadUrlRes = await fetch(`${API_BASE}/api/v1/jobs/upload-url`, {
@@ -45,6 +84,7 @@ export async function createJob(
       });
     } catch (error) {
       console.error("[API] upload-url request failed", {
+        requestId,
         stage: "upload_url",
         endpoint: `${API_BASE}/api/v1/jobs/upload-url`,
         message: error instanceof Error ? error.message : String(error),
@@ -55,6 +95,7 @@ export async function createJob(
     if (!uploadUrlRes.ok) {
       const responseText = await uploadUrlRes.text().catch(() => "");
       console.error("[API] upload-url request returned non-OK", {
+        requestId,
         stage: "upload_url",
         status: uploadUrlRes.status,
         body: responseText,
@@ -62,9 +103,22 @@ export async function createJob(
       throw new Error(`Upload URL error ${uploadUrlRes.status}: ${responseText || "no response body"}`);
     }
     const uploadData = await uploadUrlRes.json();
+    console.info("[API] upload URL received", {
+      requestId,
+      stage: "upload_url",
+      s3Key: uploadData.s3_key,
+    });
 
     let s3Upload: Response;
     try {
+      console.info("[API] uploading archive to presigned URL", {
+        requestId,
+        stage: "s3_put",
+        uploadHost:
+          typeof uploadData.upload_url === "string"
+            ? new URL(uploadData.upload_url).host
+            : "unknown",
+      });
       s3Upload = await fetch(uploadData.upload_url, {
         method: "PUT",
         body: file,
@@ -72,6 +126,7 @@ export async function createJob(
       });
     } catch (error) {
       console.error("[API] direct upload to storage failed", {
+        requestId,
         stage: "s3_put",
         uploadHost:
           typeof uploadData.upload_url === "string"
@@ -85,12 +140,18 @@ export async function createJob(
     if (!s3Upload.ok) {
       const s3ResponseText = await s3Upload.text().catch(() => "");
       console.error("[API] direct upload returned non-OK", {
+        requestId,
         stage: "s3_put",
         status: s3Upload.status,
         body: s3ResponseText,
       });
       throw new Error(`S3 upload failed ${s3Upload.status}`);
     }
+    console.info("[API] storage upload complete", {
+      requestId,
+      stage: "s3_put",
+      status: s3Upload.status,
+    });
 
     form.append("s3_key", uploadData.s3_key);
     console.log("[API] POST /api/v1/jobs", {
@@ -108,12 +169,18 @@ export async function createJob(
   }
   let res: Response;
   try {
+    console.info("[API] creating job", {
+      requestId,
+      stage: "job_create",
+      endpoint: `${API_BASE}/api/v1/jobs`,
+    });
     res = await fetch(`${API_BASE}/api/v1/jobs`, {
       method: "POST",
       body: form,
     });
   } catch (error) {
     console.error("[API] create job request failed", {
+      requestId,
       stage: "job_create",
       endpoint: `${API_BASE}/api/v1/jobs`,
       message: error instanceof Error ? error.message : String(error),
@@ -124,6 +191,7 @@ export async function createJob(
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     console.error("[API] create job returned non-OK", {
+      requestId,
       stage: "job_create",
       status: res.status,
       body,
