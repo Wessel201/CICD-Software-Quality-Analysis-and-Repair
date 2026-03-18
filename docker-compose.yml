@@ -3,15 +3,15 @@ services:
     image: postgres:16
     container_name: cq_postgres
     environment:
-      POSTGRES_DB: quality_orchestrator
-      POSTGRES_USER: app
+      POSTGRES_DB: codequality
+      POSTGRES_USER: postgres_admin
       POSTGRES_PASSWORD: app
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app -d quality_orchestrator"]
+      test: ["CMD-SHELL", "pg_isready -U postgres_admin -d codequality"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -31,7 +31,7 @@ services:
       dockerfile: Dockerfile
     container_name: cq_api
     environment:
-      DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/quality_orchestrator
+      DATABASE_URL: postgresql+psycopg://postgres_admin:app@postgres:5432/codequality
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       CELERY_TASK_ALWAYS_EAGER: "false"
@@ -56,7 +56,7 @@ services:
     command:
       ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=info"]
     environment:
-      DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/quality_orchestrator
+      DATABASE_URL: postgresql+psycopg://postgres_admin:app@postgres:5432/codequality
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       CELERY_TASK_ALWAYS_EAGER: "false"
