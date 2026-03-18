@@ -122,13 +122,23 @@ export function SubmitForm() {
         job = await createJob(uploadFile, githubUrl);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        console.error("[SubmitForm] createJob failed", {
+          message: msg,
+          error: err,
+          selectedFiles: selectedFiles.map((f) => ({
+            name: f.name,
+            size: f.size,
+            type: f.type,
+          })),
+          githubUrl: githubUrl || undefined,
+        });
         // "Failed to fetch" / "NetworkError" → server unreachable
         const isNetworkErr =
           msg.startsWith("Failed to fetch") ||
           msg.toLowerCase().includes("networkerror");
         setSubmitError(
           isNetworkErr
-            ? "Could not reach the analysis server. Make sure it is running and try again."
+            ? "Could not reach the analysis server. Make sure it is running and try again. Open browser console for request diagnostics."
             : msg,
         );
         return;
