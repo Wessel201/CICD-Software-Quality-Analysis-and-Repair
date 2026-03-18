@@ -30,7 +30,6 @@ variable "frontend_allowed_origins" {
   description = "Allowed browser origins for direct S3 uploads/downloads via CORS"
   type        = list(string)
   default = [
-    "http://localhost:3000",
-    "https://*.vercel.app",
+    "*",
   ]
 }
