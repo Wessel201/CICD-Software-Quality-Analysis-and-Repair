@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import secrets
+import time
 
 from app.api.router import api_router
 from app.db.init_db import init_db
@@ -68,7 +69,11 @@ def _is_api_key_valid(request: Request) -> bool:
 
 @app.middleware("http")
 async def verify_api_key(request: Request, call_next):
-    if request.url.path.startswith("/api") and not _is_api_key_valid(request):
+    is_api_request = request.url.path.startswith("/api")
+    started_at = time.perf_counter()
+
+    if is_api_request and not _is_api_key_valid(request):
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
         logger.warning(
             "Request rejected due to invalid or missing API key",
             extra={
@@ -76,6 +81,7 @@ async def verify_api_key(request: Request, call_next):
                 "path": request.url.path,
                 "method": request.method,
                 "status": status.HTTP_401_UNAUTHORIZED,
+                "duration_ms": duration_ms,
             },
         )
         return JSONResponse(
@@ -83,7 +89,37 @@ async def verify_api_key(request: Request, call_next):
             content={"detail": "Invalid or missing API key."},
         )
 
-    return await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        if is_api_request:
+            duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+            logger.exception(
+                "API request failed",
+                extra={
+                    "event": "api_request_failed",
+                    "path": request.url.path,
+                    "method": request.method,
+                    "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    "duration_ms": duration_ms,
+                },
+            )
+        raise
+
+    if is_api_request:
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        logger.info(
+            "API request completed",
+            extra={
+                "event": "api_request_completed",
+                "path": request.url.path,
+                "method": request.method,
+                "status": response.status_code,
+                "duration_ms": duration_ms,
+            },
+        )
+
+    return response
 
 app.add_middleware(
     CORSMiddleware,

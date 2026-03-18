@@ -15,7 +15,18 @@ async function proxyRequest(
   request: NextRequest,
   context: { params: Promise<{ path: string[] }> },
 ): Promise<Response> {
+  const startedAt = Date.now();
+
   if (!UPSTREAM_API_KEY) {
+    console.error(
+      JSON.stringify({
+        event: "frontend_proxy_error",
+        method: request.method,
+        path: request.nextUrl.pathname,
+        status: 500,
+        message: "Missing API_KEY for upstream proxy",
+      }),
+    );
     return Response.json(
       { detail: "Server is missing API_KEY for upstream API proxy." },
       { status: 500 },
@@ -24,6 +35,16 @@ async function proxyRequest(
 
   const { path } = await context.params;
   const upstreamUrl = buildUpstreamUrl(path, request.nextUrl.search);
+
+  console.info(
+    JSON.stringify({
+      event: "frontend_proxy_request",
+      method: request.method,
+      path: request.nextUrl.pathname,
+      search: request.nextUrl.search,
+      upstream_path: `/${path.join("/")}`,
+    }),
+  );
 
   const headers = new Headers(request.headers);
   headers.set("x-api-key", UPSTREAM_API_KEY);
@@ -41,6 +62,16 @@ async function proxyRequest(
     body,
     redirect: "manual",
   });
+
+  console.info(
+    JSON.stringify({
+      event: "frontend_proxy_response",
+      method: request.method,
+      path: request.nextUrl.pathname,
+      status: upstreamResponse.status,
+      duration_ms: Date.now() - startedAt,
+    }),
+  );
 
   const responseHeaders = new Headers(upstreamResponse.headers);
   responseHeaders.delete("content-encoding");
