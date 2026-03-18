@@ -21,7 +21,7 @@ resource "aws_security_group" "rds_sg" {
 resource "aws_db_instance" "metadata_db" {
   identifier           = "code-quality-db"
   engine               = "postgres"
-  engine_version       = "16.1"
+  engine_version       = var.db_engine_version
   instance_class       = "db.t4g.micro"
   allocated_storage    = 20
   storage_type         = "gp3"
