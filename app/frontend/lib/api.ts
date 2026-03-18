@@ -206,7 +206,7 @@ export async function createJob(
 
 export async function pollJobStatus(id: string, attempt: number): Promise<Job> {
   console.log(`[API] GET /api/v1/jobs/${id}`, { attempt });
-  const res = await fetch(`${API_BASE}/api/v1/jobs/${id}`);
+  const res = await fetch(`${API_BASE}/api/v1/jobs/${id}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Server error ${res.status}`);
   const raw = await res.json();
   const job: Job = { ...raw, status: normalizeStatus(raw.status) };
@@ -216,7 +216,7 @@ export async function pollJobStatus(id: string, attempt: number): Promise<Job> {
 
 export async function getJobResults(id: string): Promise<JobResult> {
   console.log(`[API] GET /api/v1/jobs/${id}/results`);
-  const res = await fetch(`${API_BASE}/api/v1/jobs/${id}/results`);
+  const res = await fetch(`${API_BASE}/api/v1/jobs/${id}/results`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Server error ${res.status}`);
   const raw = await res.json();
   console.log(`[API] GET /api/v1/jobs/${id}/results → response`, raw);
@@ -246,14 +246,14 @@ export async function getJobSourceFile(
   phase: "before" | "after" = "before",
 ): Promise<{ lines: string[]; total: number }> {
   const url = `${API_BASE}/api/v1/jobs/${jobId}/source?file=${encodeURIComponent(filePath)}&phase=${phase}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`Server error ${res.status}`);
   return res.json();
 }
 
 export async function listJobs(): Promise<JobListItem[]> {
   try {
-    const res = await fetch(`${API_BASE}/api/v1/jobs`);
+    const res = await fetch(`${API_BASE}/api/v1/jobs`, { cache: "no-store" });
     if (!res.ok) return [];
     const data = await res.json();
     return data.jobs ?? [];
@@ -294,7 +294,7 @@ export interface ArtifactInfo {
 
 export async function getJobArtifacts(jobId: string): Promise<ArtifactInfo[]> {
   try {
-    const res = await fetch(`${API_BASE}/api/v1/jobs/${jobId}/artifacts`);
+    const res = await fetch(`${API_BASE}/api/v1/jobs/${jobId}/artifacts`, { cache: "no-store" });
     if (!res.ok) return [];
     const data = await res.json();
     return data.artifacts ?? [];

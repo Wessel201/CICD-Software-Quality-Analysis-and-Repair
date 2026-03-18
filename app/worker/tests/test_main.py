@@ -48,12 +48,20 @@ class FakeCursor:
             return self.rows.pop(0)
         return None
 
+    def fetchall(self):
+        if self.rows:
+            rows = list(self.rows)
+            self.rows.clear()
+            return rows
+        return []
+
 
 class FakeConn:
     def __init__(self, rows=None):
         self.autocommit = True
         self.cursor_obj = FakeCursor(rows=rows)
         self.committed = False
+        self.rolled_back = False
 
     def __enter__(self):
         return self
@@ -66,6 +74,9 @@ class FakeConn:
 
     def commit(self):
         self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
 
 
 @pytest.fixture
@@ -300,6 +311,8 @@ def test_run_analysis_pipeline_failure_marks_failed(monkeypatch, env, tmp_path):
         )
 
     assert markers["v"][0] == "analysis_failed"
+    assert conn.rolled_back is True
+    assert conn.committed is True
     assert not cleanup.exists()
 
 
@@ -354,6 +367,8 @@ def test_run_repair_pipeline_failure_marks_failed(monkeypatch, env, tmp_path):
     with pytest.raises(RuntimeError, match="repair boom"):
         worker._run_repair_pipeline(conn, {"job_id": "job_6"})
     assert markers["v"][0] == "repair_failed"
+    assert conn.rolled_back is True
+    assert conn.committed is True
     assert not cleanup.exists()
 
 
@@ -493,6 +508,7 @@ def test_replace_findings_with_existing_run(monkeypatch, env):
     worker, _, _ = _new_worker(monkeypatch)
     conn = FakeConn(rows=[("run-1",)])
     monkeypatch.setattr(worker_main.uuid, "uuid4", lambda: "uuid-fixed")
+    monkeypatch.setattr(worker, "_resolve_analysis_phase", lambda _conn, phase: phase)
     worker._replace_findings(
         conn,
         "job_12",
@@ -521,10 +537,27 @@ def test_replace_findings_with_existing_run(monkeypatch, env):
 def test_replace_findings_without_existing_run(monkeypatch, env):
     worker, _, _ = _new_worker(monkeypatch)
     conn = FakeConn(rows=[None])
+    monkeypatch.setattr(worker, "_resolve_analysis_phase", lambda _conn, phase: phase)
     worker._replace_findings(conn, "job_13", "after", [])
     sql = "\n".join(query for query, _ in conn.cursor_obj.queries)
     assert "DELETE FROM findings" not in sql
     assert "INSERT INTO analysis_runs" in sql
+
+
+def test_resolve_analysis_phase_case_insensitive(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+    conn = FakeConn(rows=[("BEFORE",), ("AFTER",)])
+
+    resolved = worker._resolve_analysis_phase(conn, "before")
+    assert resolved == "BEFORE"
+
+
+def test_resolve_analysis_phase_rejects_unknown(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+    conn = FakeConn(rows=[("BEFORE",), ("AFTER",)])
+
+    with pytest.raises(RuntimeError, match="Unsupported analysis phase"):
+        worker._resolve_analysis_phase(conn, "during")
 
 
 def test_update_job_state_executes_sql(monkeypatch, env):
@@ -532,6 +565,7 @@ def test_update_job_state_executes_sql(monkeypatch, env):
     conn = FakeConn()
     worker._update_job_state(conn, "job_14", "ANALYZING", 50, "running")
     assert "UPDATE jobs" in conn.cursor_obj.queries[0][0]
+    assert conn.committed is True
 
 
 def test_mark_failed_executes_sql_and_truncates(monkeypatch, env):

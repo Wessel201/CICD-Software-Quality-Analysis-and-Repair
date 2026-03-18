@@ -207,7 +207,9 @@ class SqsWorker:
                 logger.info("Analysis completed", extra={"event": "analysis_complete", "job_id": job_id, "status": "READY_FOR_REPAIR"})
         except Exception as exc:
             logger.exception("Analysis pipeline failed", extra={"event": "analysis_failed", "job_id": job_id})
+            conn.rollback()
             self._mark_failed(conn, job_id, "analysis_failed", str(exc))
+            conn.commit()
             raise
         finally:
             shutil.rmtree(cleanup_path, ignore_errors=True)
@@ -263,7 +265,9 @@ class SqsWorker:
             logger.info("Repair pipeline completed", extra={"event": "repair_complete", "job_id": job_id, "status": "DONE"})
         except Exception as exc:
             logger.exception("Repair pipeline failed", extra={"event": "repair_failed", "job_id": job_id})
+            conn.rollback()
             self._mark_failed(conn, job_id, "repair_failed", str(exc))
+            conn.commit()
             raise
         finally:
             if created_locally:
@@ -315,10 +319,11 @@ class SqsWorker:
         phase: str,
         findings: list[dict[str, Any]],
     ) -> None:
+        resolved_phase = self._resolve_analysis_phase(conn, phase)
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT id FROM analysis_runs WHERE job_id = %s AND phase = %s::analysis_phase_enum",
-                (job_id, phase),
+                (job_id, resolved_phase),
             )
             row = cur.fetchone()
             if row:
@@ -331,7 +336,7 @@ class SqsWorker:
                 INSERT INTO analysis_runs (id, job_id, phase, summary_json, started_at, finished_at)
                 VALUES (%s, %s, %s::analysis_phase_enum, %s::jsonb, NOW(), NOW())
                 """,
-                (run_id, job_id, phase, json.dumps({"count": len(findings)})),
+                (run_id, job_id, resolved_phase, json.dumps({"count": len(findings)})),
             )
 
             for finding in findings:
@@ -357,6 +362,31 @@ class SqsWorker:
                     ),
                 )
 
+    def _resolve_analysis_phase(self, conn: psycopg.Connection, phase: str) -> str:
+        requested = phase.strip()
+        requested_lower = requested.lower()
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT e.enumlabel
+                FROM pg_type t
+                JOIN pg_enum e ON e.enumtypid = t.oid
+                WHERE t.typname = 'analysis_phase_enum'
+                ORDER BY e.enumsortorder
+                """
+            )
+            labels = [str(row[0]) for row in cur.fetchall()]
+
+        label_map = {label.lower(): label for label in labels}
+        if requested_lower in label_map:
+            return label_map[requested_lower]
+        if requested in labels:
+            return requested
+
+        allowed = ", ".join(labels) if labels else "before, after"
+        raise RuntimeError(f"Unsupported analysis phase '{phase}'. Allowed values: {allowed}")
+
     def _update_job_state(self, conn: psycopg.Connection, job_id: str, status: str, progress: int, current_step: str) -> None:
         logger.info("Updating job state", extra={"event": "job_state_update", "job_id": job_id, "status": status})
         with conn.cursor() as cur:
@@ -375,6 +405,8 @@ class SqsWorker:
                 """,
                 (status, progress, current_step, status, job_id),
             )
+            # Commit each state transition so external pollers can observe progress in real time.
+            conn.commit()
 
     def _mark_failed(self, conn: psycopg.Connection, job_id: str, step: str, message: str) -> None:
         logger.error("Marking job failed", extra={"event": "job_mark_failed", "job_id": job_id, "status": "FAILED"})

@@ -63,6 +63,7 @@ async function proxyRequest(
       headers,
       body,
       redirect: "manual",
+      cache: "no-store",
     });
   } catch (error) {
     console.error(
@@ -95,6 +96,9 @@ async function proxyRequest(
   const responseHeaders = new Headers(upstreamResponse.headers);
   responseHeaders.delete("content-encoding");
   responseHeaders.delete("transfer-encoding");
+  responseHeaders.set("cache-control", "no-store, no-cache, must-revalidate, max-age=0");
+  responseHeaders.set("pragma", "no-cache");
+  responseHeaders.set("expires", "0");
 
   return new Response(upstreamResponse.body, {
     status: upstreamResponse.status,
