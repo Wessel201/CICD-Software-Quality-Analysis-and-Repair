@@ -25,3 +25,12 @@ variable "db_engine_version" {
     error_message = "db_engine_version must be PostgreSQL major 16 (for example '16' or '16.6')."
   }
 }
+
+variable "frontend_allowed_origins" {
+  description = "Allowed browser origins for direct S3 uploads/downloads via CORS"
+  type        = list(string)
+  default = [
+    "http://localhost:3000",
+    "https://*.vercel.app",
+  ]
+}
