@@ -1,6 +1,6 @@
 resource "aws_ecr_repository" "api_repo" {
   name                 = "code-quality-api"
-  image_tag_mutability = "IMMUTABLE"
+  image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -26,7 +26,7 @@ resource "aws_ecr_lifecycle_policy" "api_repo_policy" {
 
 resource "aws_ecr_repository" "worker_repo" {
   name                 = "code-quality-worker"
-  image_tag_mutability = "IMMUTABLE"
+  image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
