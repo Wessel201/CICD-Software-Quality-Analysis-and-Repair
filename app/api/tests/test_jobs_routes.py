@@ -160,6 +160,7 @@ def test_create_job_from_upload_then_repair(monkeypatch) -> None:
     results_response = client.get(f"/api/v1/jobs/{job_id}/results")
     assert results_response.status_code == 200
     results_payload = results_response.json()
+    assert results_payload["status"] == "DONE"
     assert results_payload["summary"]["before_total"] == 3
     assert results_payload["summary"]["after_total"] == 1
     assert len(results_payload["patches"]) == 1

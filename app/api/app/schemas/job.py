@@ -67,6 +67,7 @@ class JobStatusResponse(BaseModel):
 
 class JobResultsResponse(BaseModel):
     job_id: str
+    status: JobStatus
     summary: JobSummary
     before: list[Finding]
     after: list[Finding]

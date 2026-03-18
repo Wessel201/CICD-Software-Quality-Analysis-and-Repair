@@ -588,6 +588,13 @@ def test_normalize_findings_and_severity_helpers(monkeypatch, env):
                     "test_id": "B105",
                     "issue_severity": "HIGH",
                     "issue_text": "hardcoded secret",
+                },
+                {
+                    "filename": "hashes.py",
+                    "line_number": 10,
+                    "test_id": "B324",
+                    "issue_severity": "MEDIUM",
+                    "issue_text": "Use of weak SHA1 hash for security. Consider usedforsecurity=False",
                 }
             ]
         },
@@ -609,7 +616,12 @@ def test_normalize_findings_and_severity_helpers(monkeypatch, env):
     }
 
     findings = worker._normalize_findings(raw)
-    assert len(findings) == 6
+    assert len(findings) == 7
+    sha1_finding = next(f for f in findings if f["rule_id"] == "B324")
+    assert "SHA-256" in sha1_finding["suggestion"]
+    assert "usedforsecurity=False" in sha1_finding["suggestion"]
+
+    assert "MD5" in worker._suggest_bandit_remediation("B303", "Use of insecure md5 hash")
     assert worker._normalize_severity(" unknown ") == "medium"
     assert worker._severity_from_complexity(9) == "low"
     assert worker._severity_from_complexity(10) == "medium"
