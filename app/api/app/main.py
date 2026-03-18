@@ -1,9 +1,13 @@
 from fastapi import FastAPI
+from fastapi import Request
+from fastapi import status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import json
 import logging
 import os
 import sys
+import secrets
 
 from app.api.router import api_router
 from app.db.init_db import init_db
@@ -50,6 +54,36 @@ app = FastAPI(
     title="Code Quality Orchestrator API",
     version="0.1.0",
 )
+
+
+def _is_api_key_valid(request: Request) -> bool:
+    configured_api_key = os.getenv("API_KEY")
+    if not configured_api_key:
+        # Keep local development and tests working when API_KEY is not configured.
+        return True
+
+    provided_api_key = request.headers.get("x-api-key") or request.query_params.get("api_key", "")
+    return secrets.compare_digest(provided_api_key, configured_api_key)
+
+
+@app.middleware("http")
+async def verify_api_key(request: Request, call_next):
+    if request.url.path.startswith("/api") and not _is_api_key_valid(request):
+        logger.warning(
+            "Request rejected due to invalid or missing API key",
+            extra={
+                "event": "api_key_rejected",
+                "path": request.url.path,
+                "method": request.method,
+                "status": status.HTTP_401_UNAUTHORIZED,
+            },
+        )
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Invalid or missing API key."},
+        )
+
+    return await call_next(request)
 
 app.add_middleware(
     CORSMiddleware,

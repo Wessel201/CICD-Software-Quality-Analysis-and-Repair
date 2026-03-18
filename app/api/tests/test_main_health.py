@@ -24,3 +24,15 @@ def test_auto_init_db_branch(monkeypatch) -> None:
     importlib.reload(main_module)
 
     assert called["count"] == 1
+
+
+def test_api_key_required_for_api_routes_when_configured(monkeypatch) -> None:
+    monkeypatch.setenv("API_KEY", "test-key")
+
+    no_key_response = client.get("/api/v1/jobs")
+    assert no_key_response.status_code == 401
+
+    with_key_response = client.get("/api/v1/jobs", headers={"x-api-key": "test-key"})
+    assert with_key_response.status_code == 200
+
+    monkeypatch.delenv("API_KEY", raising=False)

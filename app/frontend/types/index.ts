@@ -1,4 +1,8 @@
-import type { FileDiff } from "../components/DiffViewer";
+export interface FileDiff {
+  file: string;
+  // Raw unified diff text when provided by the API.
+  diff?: string;
+}
 
 // Statuses used internally by the frontend (normalised)
 export type JobStatus =

@@ -9,6 +9,12 @@ variable "openai_api_key" {
   sensitive = true
 }
 
+variable "api_key" {
+  description = "Shared API key used by the backend to authorize frontend proxy requests"
+  type        = string
+  sensitive   = true
+}
+
 variable "db_engine_version" {
   description = "PostgreSQL engine version for RDS. Use major version '16' to let AWS select the latest supported 16.x minor in the region."
   type        = string

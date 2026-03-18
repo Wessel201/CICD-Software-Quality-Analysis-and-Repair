@@ -13,6 +13,24 @@ This README explains how to run the backend API with either Docker (recommended)
 
 Swagger UI: `http://localhost:8000/docs`
 
+## API key protection
+
+- Protected routes under `/api/*` require an API key.
+- Send the key in header `x-api-key` (recommended) or query param `api_key` (used by browser download links).
+- Configure backend key with environment variable `API_KEY`.
+
+Example:
+
+```bash
+curl -H "x-api-key: your_api_key_here" http://localhost:8000/api/v1/jobs
+```
+
+For a Next.js frontend, prefer server-side proxying so the key stays private:
+
+- Store `API_KEY` as a non-public server env var in Vercel.
+- Let Next.js Route Handlers add `x-api-key` when forwarding requests to this backend.
+- Do not expose this key as `NEXT_PUBLIC_*`.
+
 ---
 
 ## Option 1: Run with Docker (recommended)
