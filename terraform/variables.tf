@@ -8,3 +8,14 @@ variable "openai_api_key" {
   type      = string
   sensitive = true
 }
+
+variable "db_engine_version" {
+  description = "PostgreSQL engine version for RDS. Use major version '16' to let AWS select the latest supported 16.x minor in the region."
+  type        = string
+  default     = "16"
+
+  validation {
+    condition     = can(regex("^16(\\.[0-9]+)?$", var.db_engine_version))
+    error_message = "db_engine_version must be PostgreSQL major 16 (for example '16' or '16.6')."
+  }
+}

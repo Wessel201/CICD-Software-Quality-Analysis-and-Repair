@@ -71,3 +71,40 @@ Core tables:
 - `analysis_runs`
 - `findings`
 - `artifacts`
+
+## Terraform deployment note
+
+The RDS PostgreSQL version is configurable with `db_engine_version` in Terraform.
+
+- Default is `16`, which tells AWS to use the latest supported PostgreSQL 16.x minor version in the target region.
+- Override when needed, for example: `terraform -chdir=terraform apply -var="db_engine_version=16.6"`.
+
+If AWS returns an engine version availability error, list currently supported versions in your region and pick one:
+
+`aws rds describe-db-engine-versions --engine postgres --region eu-central-1 --query 'DBEngineVersions[*].EngineVersion' --output text`
+
+### Remote Terraform state for CI/CD
+
+CI deploy and destroy workflows are configured to use an S3 backend with DynamoDB locking.
+
+Required GitHub secrets:
+
+- `TF_STATE_BUCKET`: S3 bucket name that stores Terraform state
+- `TF_LOCK_TABLE`: DynamoDB table name used for Terraform state locking
+
+State key used by workflows:
+
+- `prod/terraform.tfstate`
+
+One-time bootstrap (create before first pipeline run):
+
+1. Create an S3 bucket in `eu-central-1` for Terraform state.
+2. Enable bucket versioning.
+3. Create a DynamoDB table for locks with primary key `LockID` (string).
+4. Add `TF_STATE_BUCKET` and `TF_LOCK_TABLE` in repository GitHub secrets.
+
+Alternative bootstrap path:
+
+1. Run the GitHub Actions workflow `Bootstrap Terraform Backend`.
+2. Provide bucket and table names in the workflow inputs.
+3. Add the same values to GitHub secrets `TF_STATE_BUCKET` and `TF_LOCK_TABLE`.
