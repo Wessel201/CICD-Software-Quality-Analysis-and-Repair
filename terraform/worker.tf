@@ -49,7 +49,7 @@ resource "aws_ecs_task_definition" "worker_task" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          "awslogs-group"         = "/ecs/worker"
+          "awslogs-group"         = aws_cloudwatch_log_group.worker_logs.name
           "awslogs-region"        = "eu-central-1"
           "awslogs-stream-prefix" = "ecs"
         }

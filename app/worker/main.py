@@ -1,7 +1,9 @@
 import json
+import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -13,6 +15,43 @@ import boto3
 import psycopg
 
 from analyzer import Analyzer
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "service": "worker",
+            "event": getattr(record, "event", "log"),
+            "message": record.getMessage(),
+        }
+
+        for field in ["job_id", "message_id", "status", "duration_ms"]:
+            value = getattr(record, field, None)
+            if value is not None:
+                payload[field] = value
+
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+
+        return json.dumps(payload)
+
+
+def configure_logging() -> None:
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(JsonFormatter())
+
+    root_logger.addHandler(handler)
+    root_logger.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
+
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 def _build_database_url() -> str:
@@ -50,7 +89,7 @@ class SqsWorker:
         self.max_repair_cycles = self._parse_max_repair_cycles(os.getenv("MAX_REPAIR_CYCLES", "3"))
 
     def run_forever(self) -> None:
-        print("Worker started. Waiting for SQS messages...")
+        logger.info("Worker started", extra={"event": "worker_started"})
         while True:
             message = self._receive_message()
             if message is None:
@@ -60,13 +99,22 @@ class SqsWorker:
             message_id = message.get("MessageId", "unknown")
             try:
                 payload = json.loads(message.get("Body", "{}"))
-                print(f"Processing message {message_id}: {payload}")
+                logger.info(
+                    "Processing message",
+                    extra={"event": "message_processing_start", "message_id": message_id, "job_id": payload.get("job_id")},
+                )
                 self._process_payload(payload)
                 self._delete_message(receipt)
-                print(f"Finished message {message_id}")
+                logger.info(
+                    "Finished message",
+                    extra={"event": "message_processing_complete", "message_id": message_id, "job_id": payload.get("job_id")},
+                )
             except Exception as exc:
                 # Do not delete message. SQS retry + DLQ policy handles failures.
-                print(f"Message {message_id} failed: {exc}")
+                logger.exception(
+                    "Message processing failed",
+                    extra={"event": "message_processing_failed", "message_id": message_id},
+                )
                 time.sleep(1)
 
     def _receive_message(self) -> dict[str, Any] | None:
@@ -88,6 +136,7 @@ class SqsWorker:
             raise RuntimeError("Message payload missing job_id.")
 
         action = str(payload.get("action", "analyze")).lower()
+        logger.info("Payload received", extra={"event": "payload_received", "job_id": job_id})
         with psycopg.connect(self.database_url) as conn:
             conn.autocommit = False
             context = self._get_job_context(conn, job_id)
@@ -136,6 +185,7 @@ class SqsWorker:
     def _run_analysis_pipeline(self, conn: psycopg.Connection, context: dict[str, Any], payload: dict[str, Any]) -> None:
         job_id = context["job_id"]
         auto_repair = bool(payload.get("auto_repair", context["auto_repair"]))
+        logger.info("Analysis pipeline started", extra={"event": "analysis_start", "job_id": job_id})
 
         self._update_job_state(conn, job_id, "FETCHING", 15, "fetching_source")
         source_dir, cleanup_path = self._prepare_source(context)
@@ -154,7 +204,9 @@ class SqsWorker:
                 )
             else:
                 self._update_job_state(conn, job_id, "READY_FOR_REPAIR", 65, "analysis_completed")
+                logger.info("Analysis completed", extra={"event": "analysis_complete", "job_id": job_id, "status": "READY_FOR_REPAIR"})
         except Exception as exc:
+            logger.exception("Analysis pipeline failed", extra={"event": "analysis_failed", "job_id": job_id})
             self._mark_failed(conn, job_id, "analysis_failed", str(exc))
             raise
         finally:
@@ -170,6 +222,7 @@ class SqsWorker:
         job_id = context["job_id"]
         created_locally = False
         repair_cycles = self._bounded_repair_cycles(requested_cycles)
+        logger.info("Repair pipeline started", extra={"event": "repair_start", "job_id": job_id})
 
         if source_dir is None:
             source_dir, cleanup_path = self._prepare_source(context)
@@ -180,6 +233,10 @@ class SqsWorker:
         try:
             after_findings: list[dict[str, Any]] = []
             for cycle in range(1, repair_cycles + 1):
+                logger.info(
+                    "Repair cycle started",
+                    extra={"event": "repair_cycle_start", "job_id": job_id},
+                )
                 self._update_job_state(
                     conn,
                     job_id,
@@ -203,7 +260,9 @@ class SqsWorker:
                     break
 
             self._update_job_state(conn, job_id, "DONE", 100, "completed")
+            logger.info("Repair pipeline completed", extra={"event": "repair_complete", "job_id": job_id, "status": "DONE"})
         except Exception as exc:
+            logger.exception("Repair pipeline failed", extra={"event": "repair_failed", "job_id": job_id})
             self._mark_failed(conn, job_id, "repair_failed", str(exc))
             raise
         finally:
@@ -220,6 +279,7 @@ class SqsWorker:
             github_url = context.get("github_url")
             if not github_url:
                 raise RuntimeError("Missing github_url for GitHub source job.")
+            logger.info("Cloning repository", extra={"event": "source_clone_start", "job_id": context["job_id"]})
             subprocess.run(
                 ["git", "clone", "--depth", "1", "--single-branch", github_url, str(source_dir)],
                 check=True,
@@ -227,6 +287,7 @@ class SqsWorker:
                 text=True,
                 timeout=180,
             )
+            logger.info("Repository cloned", extra={"event": "source_clone_complete", "job_id": context["job_id"]})
             return source_dir, workspace
 
         storage_key = context.get("storage_key")
@@ -235,11 +296,13 @@ class SqsWorker:
 
         archive_path = workspace / "archive.zip"
         key = storage_key.removeprefix("s3://")
+        logger.info("Downloading source archive", extra={"event": "source_download_start", "job_id": context["job_id"]})
         self.s3.download_file(self.bucket_name, key, str(archive_path))
 
         try:
             with ZipFile(archive_path, "r") as archive:
                 archive.extractall(source_dir)
+            logger.info("Source archive unpacked", extra={"event": "source_unpack_complete", "job_id": context["job_id"]})
         except Exception as exc:
             raise RuntimeError(f"Failed to unpack source archive: {exc}") from exc
 
@@ -295,6 +358,7 @@ class SqsWorker:
                 )
 
     def _update_job_state(self, conn: psycopg.Connection, job_id: str, status: str, progress: int, current_step: str) -> None:
+        logger.info("Updating job state", extra={"event": "job_state_update", "job_id": job_id, "status": status})
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -313,6 +377,7 @@ class SqsWorker:
             )
 
     def _mark_failed(self, conn: psycopg.Connection, job_id: str, step: str, message: str) -> None:
+        logger.error("Marking job failed", extra={"event": "job_mark_failed", "job_id": job_id, "status": "FAILED"})
         with conn.cursor() as cur:
             cur.execute(
                 """
