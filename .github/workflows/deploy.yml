@@ -36,11 +36,13 @@ jobs:
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init & Apply
+        id: tf-apply
         working-directory: ./terraform
         env:
           # Securely inject BOTH sensitive variables for Terraform
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_api_key: ${{ secrets.API_KEY }}
           TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
           TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
           TF_STATE_KEY: ${{ env.TF_STATE_KEY }}
@@ -57,6 +59,65 @@ jobs:
             -backend-config="dynamodb_table=$TF_LOCK_TABLE" \
             -backend-config="encrypt=true"
           terraform apply -auto-approve
+
+          ALB_DNS_NAME="$(terraform output -raw alb_dns_name)"
+          if [ -z "$ALB_DNS_NAME" ]; then
+            echo "Failed to read Terraform output alb_dns_name."
+            exit 1
+          fi
+
+          echo "ALB_URL=http://${ALB_DNS_NAME}" >> "$GITHUB_ENV"
+
+      - name: Sync Vercel Environment Variables
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          API_KEY_SECRET: ${{ secrets.API_KEY }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "Missing one or more Vercel secrets: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID."
+            exit 1
+          fi
+
+          if [ -z "$API_KEY_SECRET" ]; then
+            echo "Missing API_KEY secret."
+            exit 1
+          fi
+
+          upsert_vercel_env() {
+            local key="$1"
+            local value="$2"
+
+            local existing_ids
+            existing_ids=$(curl -fsSL \
+              -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+              "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env?target=production&teamId=${VERCEL_ORG_ID}" \
+              | jq -r --arg key "$key" '.envs[] | select(.key == $key) | .id')
+
+            if [ -n "$existing_ids" ]; then
+              while IFS= read -r env_id; do
+                [ -z "$env_id" ] && continue
+                curl -fsSL -X DELETE \
+                  -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+                  "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env/${env_id}?teamId=${VERCEL_ORG_ID}" \
+                  >/dev/null
+              done <<< "$existing_ids"
+            fi
+
+            curl -fsSL -X POST \
+              -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+              -H "Content-Type: application/json" \
+              "https://api.vercel.com/v10/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_ORG_ID}" \
+              -d "$(jq -nc --arg key "$key" --arg value "$value" '{key: $key, value: $value, type: "encrypted", target: ["production"]}')" \
+              >/dev/null
+          }
+
+          # API_BASE is server-only and consumed by the Next.js proxy route.
+          upsert_vercel_env "API_BASE" "$ALB_URL"
+
+          # API_KEY remains server-only; never expose it as NEXT_PUBLIC_*.
+          upsert_vercel_env "API_KEY" "$API_KEY_SECRET"
 
       # 4. Log in to Amazon Elastic Container Registry (ECR)
       - name: Login to Amazon ECR

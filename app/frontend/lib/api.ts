@@ -1,7 +1,7 @@
 import type { Job, JobListItem, JobResult, ApiJobStatus } from "../types";
 
 // get api base from env var, or default to localhost for development
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/proxy";
 
 // ── Status normalisation ──────────────────────────────────────────────────────
 // Maps the API's multi-step uppercase statuses to the four frontend states.

@@ -91,6 +91,12 @@ Required GitHub secrets:
 
 - `TF_STATE_BUCKET`: S3 bucket name that stores Terraform state
 - `TF_LOCK_TABLE`: DynamoDB table name used for Terraform state locking
+- `DB_PASSWORD`: database password passed to Terraform as `TF_VAR_db_password`
+- `OPENAI_API_KEY`: worker key passed to Terraform as `TF_VAR_openai_api_key`
+- `API_KEY`: backend API key passed to Terraform as `TF_VAR_api_key`
+- `VERCEL_TOKEN`: token used to manage Vercel project environment variables
+- `VERCEL_ORG_ID`: Vercel team/user ID used by API calls (`teamId`)
+- `VERCEL_PROJECT_ID`: Vercel project ID where env vars are updated
 
 State key used by workflows:
 
@@ -102,6 +108,12 @@ One-time bootstrap (create before first pipeline run):
 2. Enable bucket versioning.
 3. Create a DynamoDB table for locks with primary key `LockID` (string).
 4. Add `TF_STATE_BUCKET` and `TF_LOCK_TABLE` in repository GitHub secrets.
+
+Deployment pipeline behavior:
+
+- After `terraform apply`, CI reads `alb_dns_name` from Terraform outputs.
+- CI sets Vercel production env `API_BASE` to `http://<alb_dns_name>`.
+- CI also sets Vercel production env `API_KEY` from GitHub Secret `API_KEY`.
 
 Alternative bootstrap path:
 

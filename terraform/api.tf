@@ -75,7 +75,8 @@ resource "aws_ecs_task_definition" "api_task" {
         { name = "SQS_QUEUE_URL", value = aws_sqs_queue.job_queue.url },
         { name = "S3_BUCKET_NAME", value = aws_s3_bucket.artifact_storage.bucket },
         { name = "DB_HOST", value = aws_db_instance.metadata_db.address },
-        { name = "DB_PASSWORD", value = var.db_password }
+        { name = "DB_PASSWORD", value = var.db_password },
+        { name = "API_KEY", value = var.api_key }
       ]
 
       logConfiguration = {

@@ -36,6 +36,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       CELERY_TASK_ALWAYS_EAGER: "false"
       AUTO_INIT_DB: "true"
+      API_KEY: ${API_KEY:-prototype_api_key}
       WORKER_URL: http://worker-llm:8000
     depends_on:
       postgres:

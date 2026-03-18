@@ -2,6 +2,17 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+Set frontend environment variables (locally in `.env.local`, in Vercel under Project Settings -> Environment Variables):
+
+```bash
+NEXT_PUBLIC_API_BASE=/api/proxy
+API_BASE=http://localhost:8000
+API_KEY=your_api_key_here
+```
+
+`API_KEY` is server-only and injected by the Next.js proxy route when it calls the backend.
+Keep `API_KEY` out of `NEXT_PUBLIC_*` variables.
+
 First, run the development server:
 
 ```bash
