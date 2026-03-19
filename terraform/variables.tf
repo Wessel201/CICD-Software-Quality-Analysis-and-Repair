@@ -33,3 +33,32 @@ variable "frontend_allowed_origins" {
     "*",
   ]
 }
+
+variable "enable_debug_instance" {
+  description = "Create a public EC2 debug host to connect to the private Postgres instance."
+  type        = bool
+  default     = true
+}
+
+variable "debug_instance_type" {
+  description = "EC2 instance type for the debug host."
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "debug_key_name" {
+  description = "Existing EC2 key pair name for SSH access to the debug host. Required when enable_debug_instance is true."
+  type        = string
+  default     = "debug-instance"
+
+  validation {
+    condition     = var.enable_debug_instance == false || length(trimspace(var.debug_key_name)) > 0
+    error_message = "debug_key_name must be set when enable_debug_instance is true."
+  }
+}
+
+variable "debug_ssh_cidr" {
+  description = "CIDR allowed to SSH into the debug host (for example, your office/home IP with /32)."
+  type        = string
+  default     = "0.0.0.0/0"
+}
