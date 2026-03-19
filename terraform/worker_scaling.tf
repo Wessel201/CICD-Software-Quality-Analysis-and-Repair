@@ -76,7 +76,7 @@ resource "aws_cloudwatch_metric_alarm" "queue_not_empty" {
   evaluation_periods  = 1
   metric_name         = "ApproximateNumberOfMessagesVisible"
   namespace           = "AWS/SQS"
-  period              = 60
+  period              = 10
   statistic           = "Maximum"
   threshold           = 0
 
