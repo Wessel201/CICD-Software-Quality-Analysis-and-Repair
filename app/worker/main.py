@@ -13,8 +13,10 @@ from zipfile import ZipFile
 
 import boto3
 import psycopg
+from openai import OpenAI
 
 from analyzer import Analyzer
+from repairman import Repairman
 
 
 class JsonFormatter(logging.Formatter):
@@ -234,6 +236,10 @@ class SqsWorker:
 
         try:
             after_findings: list[dict[str, Any]] = []
+            repair_targets = self._fetch_phase_findings(conn, job_id, "before")
+            llm_client = self._build_llm_client()
+            repairman = Repairman()
+
             for cycle in range(1, repair_cycles + 1):
                 logger.info(
                     "Repair cycle started",
@@ -246,7 +252,22 @@ class SqsWorker:
                     80,
                     f"applying_llm_repair_balanced_cycle_{cycle}_of_{repair_cycles}",
                 )
-                # Placeholder repair: keep source unchanged, run post-repair analysis for consistent API shape.
+                applied_count = self._apply_repairs_for_findings(
+                    source_dir=source_dir,
+                    findings=repair_targets,
+                    repairman=repairman,
+                    llm_client=llm_client,
+                    job_id=job_id,
+                )
+                logger.info(
+                    "Repair cycle fix application complete",
+                    extra={
+                        "event": "repair_cycle_apply_complete",
+                        "job_id": job_id,
+                        "status": f"applied_{applied_count}_fixes",
+                    },
+                )
+
                 self._update_job_state(
                     conn,
                     job_id,
@@ -261,6 +282,22 @@ class SqsWorker:
                 if not after_findings:
                     break
 
+                repair_targets = self._findings_to_repair_targets(after_findings)
+
+            uploaded_storage_key = self._upload_fixed_repository_archive(
+                context=context,
+                source_dir=source_dir,
+                workspace=cleanup_path,
+            )
+            if uploaded_storage_key:
+                self._upsert_artifact_record(
+                    conn=conn,
+                    job_id=job_id,
+                    artifact_type="repaired_source_archive",
+                    storage_key=uploaded_storage_key,
+                    content_type="application/zip",
+                )
+
             self._update_job_state(conn, job_id, "DONE", 100, "completed")
             logger.info("Repair pipeline completed", extra={"event": "repair_complete", "job_id": job_id, "status": "DONE"})
         except Exception as exc:
@@ -272,6 +309,269 @@ class SqsWorker:
         finally:
             if created_locally:
                 shutil.rmtree(cleanup_path, ignore_errors=True)
+
+    def _fetch_phase_findings(self, conn: psycopg.Connection, job_id: str, phase: str) -> list[dict[str, Any]]:
+        resolved_phase = self._resolve_analysis_phase(conn, phase)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT f.file_path, f.line, f.rule_id, f.message
+                FROM findings f
+                JOIN analysis_runs ar ON ar.id = f.analysis_run_id
+                WHERE ar.job_id = %s
+                  AND ar.phase = %s::analysis_phase_enum
+                ORDER BY f.id ASC
+                """,
+                (job_id, resolved_phase),
+            )
+            rows = cur.fetchall()
+
+        findings: list[dict[str, Any]] = []
+        for row in rows:
+            file_path = str(row[0] or "").strip()
+            if not file_path:
+                continue
+            findings.append(
+                {
+                    "file_path": file_path,
+                    "line": int(row[1] or 0),
+                    "rule_id": str(row[2] or "UNKNOWN"),
+                    "message": str(row[3] or "Issue detected."),
+                }
+            )
+
+        return findings
+
+    def _findings_to_repair_targets(self, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        targets: list[dict[str, Any]] = []
+        for finding in findings:
+            file_path = str(finding.get("file", "")).strip()
+            if not file_path:
+                continue
+            targets.append(
+                {
+                    "file_path": file_path,
+                    "line": int(finding.get("line", 0) or 0),
+                    "rule_id": str(finding.get("rule_id") or "UNKNOWN"),
+                    "message": str(finding.get("message") or "Issue detected."),
+                }
+            )
+        return targets
+
+    def _build_llm_client(self) -> OpenAI | None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            logger.warning(
+                "OPENAI_API_KEY not configured, skipping LLM repair generation",
+                extra={"event": "repair_llm_key_missing"},
+            )
+            return None
+
+        return OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+
+    def _apply_repairs_for_findings(
+        self,
+        source_dir: Path,
+        findings: list[dict[str, Any]],
+        repairman: Repairman,
+        llm_client: OpenAI | None,
+        job_id: str,
+    ) -> int:
+        if not findings:
+            logger.info(
+                "No findings available for repair",
+                extra={"event": "repair_targets_empty", "job_id": job_id},
+            )
+            return 0
+
+        applied_count = 0
+        for finding in findings:
+            file_path = str(finding.get("file_path", "")).strip()
+            line = int(finding.get("line", 0) or 0)
+
+            if not file_path or line <= 0:
+                continue
+
+            full_path = (source_dir / file_path).resolve()
+            try:
+                full_path.relative_to(source_dir.resolve())
+            except ValueError:
+                logger.warning(
+                    "Skipping finding with path outside source directory",
+                    extra={"event": "repair_skip_outside_source", "job_id": job_id},
+                )
+                continue
+
+            if not full_path.exists():
+                logger.warning(
+                    "Skipping finding because file is missing",
+                    extra={"event": "repair_skip_missing_file", "job_id": job_id},
+                )
+                continue
+
+            try:
+                snippet_data = repairman.isolate_snippet(str(full_path), line)
+                if not snippet_data or not str(snippet_data.get("snippet", "")).strip():
+                    logger.warning(
+                        "Snippet extraction produced no content",
+                        extra={"event": "repair_snippet_empty", "job_id": job_id},
+                    )
+                    continue
+
+                fixed_snippet = self._generate_fixed_snippet(
+                    llm_client=llm_client,
+                    snippet=str(snippet_data["snippet"]),
+                    issue_line=line,
+                    rule_id=str(finding.get("rule_id") or "UNKNOWN"),
+                    issue_message=str(finding.get("message") or "Issue detected."),
+                )
+                if not fixed_snippet:
+                    continue
+
+                repairman.apply_fix(
+                    str(full_path),
+                    int(snippet_data["start_line"]),
+                    int(snippet_data["end_line"]),
+                    fixed_snippet,
+                )
+                applied_count += 1
+            except Exception:
+                logger.exception(
+                    "Failed to repair finding, continuing",
+                    extra={"event": "repair_apply_error", "job_id": job_id},
+                )
+
+        return applied_count
+
+    def _generate_fixed_snippet(
+        self,
+        llm_client: OpenAI | None,
+        snippet: str,
+        issue_line: int,
+        rule_id: str,
+        issue_message: str,
+    ) -> str | None:
+        if llm_client is None:
+            return None
+
+        model_name = os.getenv("REPAIR_MODEL", "deepseek-chat")
+        prompt = self._build_repair_prompt(
+            snippet=snippet,
+            issue_line=issue_line,
+            rule_id=rule_id,
+            issue_message=issue_message,
+        )
+
+        try:
+            completion = llm_client.chat.completions.create(
+                model=model_name,
+                temperature=0,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a senior Python code repair assistant. "
+                            "Return only the repaired Python snippet text. "
+                            "Do not include markdown fences, explanations, or extra commentary."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            )
+        except Exception:
+            logger.exception("DeepSeek repair request failed", extra={"event": "repair_llm_request_failed"})
+            return None
+
+        content = ""
+        try:
+            content = str(completion.choices[0].message.content or "")
+        except Exception:
+            logger.exception("DeepSeek response parsing failed", extra={"event": "repair_llm_parse_failed"})
+            return None
+
+        cleaned = self._strip_code_fences(content).rstrip()
+        if not cleaned:
+            return None
+        return cleaned
+
+    @staticmethod
+    def _build_repair_prompt(snippet: str, issue_line: int, rule_id: str, issue_message: str) -> str:
+        return (
+            "Fix the Python code snippet below.\n"
+            "Issue details:\n"
+            f"- Rule: {rule_id}\n"
+            f"- Message: {issue_message}\n"
+            f"- Approximate issue line in snippet context: {issue_line}\n\n"
+            "Requirements:\n"
+            "1. Return only the fixed Python code snippet.\n"
+            "2. Preserve behavior where possible while fixing the issue.\n"
+            "3. Keep imports/usages compatible with the surrounding file context.\n\n"
+            "Snippet:\n"
+            f"{snippet}"
+        )
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        stripped = text.strip()
+        if not stripped.startswith("```"):
+            return stripped
+
+        lines = stripped.splitlines()
+        if len(lines) >= 2 and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+
+    def _upload_fixed_repository_archive(self, context: dict[str, Any], source_dir: Path, workspace: Path) -> str | None:
+        storage_key = str(context.get("storage_key") or "").strip()
+        if not storage_key:
+            logger.warning(
+                "No storage_key in job context; skipping fixed archive upload",
+                extra={"event": "repair_upload_skipped_missing_storage_key", "job_id": context.get("job_id")},
+            )
+            return None
+
+        original_key = storage_key.removeprefix("s3://")
+        fixed_storage_key = f"{original_key}_fixed.zip"
+        archive_path = workspace / "fixed_source.zip"
+
+        self._zip_directory(source_dir=source_dir, archive_path=archive_path)
+        self.s3.upload_file(str(archive_path), self.bucket_name, fixed_storage_key)
+        logger.info(
+            "Uploaded fixed repository archive",
+            extra={"event": "repair_upload_complete", "job_id": context.get("job_id")},
+        )
+        return f"s3://{fixed_storage_key}"
+
+    def _upsert_artifact_record(
+        self,
+        conn: psycopg.Connection,
+        job_id: str,
+        artifact_type: str,
+        storage_key: str,
+        content_type: str | None,
+    ) -> None:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM artifacts WHERE job_id = %s AND type = %s",
+                (job_id, artifact_type),
+            )
+            cur.execute(
+                """
+                INSERT INTO artifacts (job_id, type, storage_key, content_type)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (job_id, artifact_type, storage_key, content_type),
+            )
+
+    @staticmethod
+    def _zip_directory(source_dir: Path, archive_path: Path) -> None:
+        with ZipFile(archive_path, "w") as archive:
+            for file_path in source_dir.rglob("*"):
+                if file_path.is_file():
+                    archive.write(file_path, file_path.relative_to(source_dir))
 
     def _prepare_source(self, context: dict[str, Any]) -> tuple[Path, Path]:
         workspace = Path(tempfile.mkdtemp(prefix=f"job_{context['job_id']}_"))

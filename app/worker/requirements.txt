@@ -9,5 +9,6 @@ uvicorn
 python-multipart
 boto3
 psycopg[binary]
+openai
 pytest
 pytest-cov
