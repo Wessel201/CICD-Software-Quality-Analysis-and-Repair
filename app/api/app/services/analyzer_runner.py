@@ -1,8 +1,10 @@
 from pathlib import Path
 from shutil import rmtree, unpack_archive
 import json
+import os
 import subprocess
 
+import boto3
 from fastapi import HTTPException
 
 from app.schemas.job import Finding
@@ -21,8 +23,16 @@ class AnalyzerRunner:
         repository_id: str,
         source_type: str,
         phase: str,
+        storage_key: str | None = None,
+        github_url: str | None = None,
     ) -> tuple[list[Finding], dict[str, object]]:
-        source_directory = self._resolve_source_directory(repository_id=repository_id, source_type=source_type, phase=phase)
+        source_directory = self._resolve_source_directory(
+            repository_id=repository_id,
+            source_type=source_type,
+            phase=phase,
+            storage_key=storage_key,
+            github_url=github_url,
+        )
 
         findings: list[Finding] = []
         reports: dict[str, object] = {}
@@ -49,15 +59,33 @@ class AnalyzerRunner:
 
         return findings, reports
 
-    def _resolve_source_directory(self, repository_id: str, source_type: str, phase: str) -> Path:
+    def _resolve_source_directory(
+        self,
+        repository_id: str,
+        source_type: str,
+        phase: str,
+        storage_key: str | None = None,
+        github_url: str | None = None,
+    ) -> Path:
         repository_root = self.uploads_dir / repository_id
-        if not repository_root.exists():
-            raise HTTPException(status_code=500, detail=f"Repository source not found for id {repository_id}.")
+        repository_root.mkdir(parents=True, exist_ok=True)
 
         if source_type == "github_url":
             source_directory = repository_root / "source"
             if not source_directory.exists():
-                raise HTTPException(status_code=500, detail=f"Cloned source directory is missing for {repository_id}.")
+                if github_url:
+                    try:
+                        subprocess.run(
+                            ["git", "clone", "--depth", "1", "--single-branch", github_url, str(source_directory)],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=180,
+                        )
+                    except Exception as exc:
+                        raise HTTPException(status_code=500, detail=f"Cloned source directory is missing for {repository_id}.") from exc
+                else:
+                    raise HTTPException(status_code=500, detail=f"Cloned source directory is missing for {repository_id}.")
             return source_directory
 
         source_directory = repository_root / "source"
@@ -65,10 +93,13 @@ class AnalyzerRunner:
             return source_directory
 
         archive_files = [path for path in repository_root.iterdir() if path.is_file()]
-        if not archive_files:
+        if archive_files:
+            archive_file = archive_files[0]
+        elif storage_key:
+            archive_file = self._download_archive_from_s3(repository_root=repository_root, storage_key=storage_key)
+        else:
             raise HTTPException(status_code=500, detail=f"No uploaded archive found for {repository_id}.")
 
-        archive_file = archive_files[0]
         source_directory.mkdir(parents=True, exist_ok=True)
 
         try:
@@ -78,6 +109,23 @@ class AnalyzerRunner:
             raise HTTPException(status_code=400, detail=f"Failed to extract uploaded archive {archive_file.name}.") from exc
 
         return source_directory
+
+    def _download_archive_from_s3(self, repository_root: Path, storage_key: str) -> Path:
+        bucket = os.getenv("S3_BUCKET_NAME")
+        if not bucket:
+            raise HTTPException(status_code=500, detail="S3 bucket is not configured for source retrieval.")
+
+        key = storage_key.removeprefix("s3://")
+        suffix = Path(key).suffix or ".zip"
+        local_archive = repository_root / f"source_from_s3{suffix}"
+
+        try:
+            s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "eu-central-1"))
+            s3.download_file(bucket, key, str(local_archive))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Failed to download source archive from S3.") from exc
+
+        return local_archive
 
     def _run_bandit(self, source_directory: Path) -> tuple[list[Finding], dict[str, object] | None]:
         result = self._execute_command(["bandit", "-r", str(source_directory), "-f", "json"])
@@ -227,10 +275,22 @@ class AnalyzerRunner:
 
         return findings, raw_results
 
-    def read_source_file(self, repository_id: str, source_type: str, file_path: str, phase: str = "before") -> list[str]:
+    def read_source_file(
+        self,
+        repository_id: str,
+        source_type: str,
+        file_path: str,
+        phase: str = "before",
+        storage_key: str | None = None,
+        github_url: str | None = None,
+    ) -> list[str]:
         """Return all lines of a source file, validating the path stays within the job's source directory."""
         source_directory = self._resolve_source_directory(
-            repository_id=repository_id, source_type=source_type, phase=phase
+            repository_id=repository_id,
+            source_type=source_type,
+            phase=phase,
+            storage_key=storage_key,
+            github_url=github_url,
         ).resolve()
 
         requested_path = Path(file_path)
@@ -250,12 +310,23 @@ class AnalyzerRunner:
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Failed to read source file.") from exc
 
-    def build_source_archive(self, repository_id: str, source_type: str, phase: str = "before") -> bytes:
+    def build_source_archive(
+        self,
+        repository_id: str,
+        source_type: str,
+        phase: str = "before",
+        storage_key: str | None = None,
+        github_url: str | None = None,
+    ) -> bytes:
         """Zip all Python files in the source directory and return the zip bytes."""
         import zipfile
         import io
         source_dir = self._resolve_source_directory(
-            repository_id=repository_id, source_type=source_type, phase=phase
+            repository_id=repository_id,
+            source_type=source_type,
+            phase=phase,
+            storage_key=storage_key,
+            github_url=github_url,
         ).resolve()
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

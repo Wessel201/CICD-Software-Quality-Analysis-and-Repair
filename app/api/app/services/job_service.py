@@ -154,12 +154,16 @@ class JobService:
                 repository_id=job_context.repository_id,
                 source_type=job_context.source_type,
                 phase="before",
+                storage_key=job_context.storage_key,
+                github_url=job_context.github_url,
             )
             self._attach_snippets(
                 findings=after,
                 repository_id=job_context.repository_id,
                 source_type=job_context.source_type,
                 phase="after",
+                storage_key=job_context.storage_key,
+                github_url=job_context.github_url,
             )
 
             # Don't gate on 'after' — it's empty when repair hasn't run yet (READY_FOR_REPAIR)
@@ -189,6 +193,8 @@ class JobService:
             source_type=job_context.source_type,
             file_path=file_path,
             phase=phase,
+            storage_key=job_context.storage_key,
+            github_url=job_context.github_url,
         )
         return SourceFileResponse(file=file_path, lines=lines, total=len(lines))
 
@@ -200,6 +206,8 @@ class JobService:
             repository_id=job_context.repository_id,
             source_type=job_context.source_type,
             phase=phase,
+            storage_key=job_context.storage_key,
+            github_url=job_context.github_url,
         )
         filename = f"{job_id}_{phase}_source.zip"
         return zip_bytes, filename
@@ -301,6 +309,8 @@ class JobService:
                         repository_id=job_context.repository_id,
                         source_type=job_context.source_type,
                         phase="before",
+                        storage_key=job_context.storage_key,
+                        github_url=job_context.github_url,
                     )
                     repository.replace_findings_for_phase(job_id=job_id, phase=AnalysisPhase.BEFORE, findings=before_findings)
                     analysis_artifacts = self._write_analysis_artifacts(
@@ -412,6 +422,8 @@ class JobService:
         repository_id: str,
         source_type: str,
         phase: str,
+        storage_key: str | None = None,
+        github_url: str | None = None,
         context: int = 3,
     ) -> None:
         file_cache: dict[str, list[str] | None] = {}
@@ -427,6 +439,8 @@ class JobService:
                         source_type=source_type,
                         file_path=finding.file,
                         phase=phase,
+                        storage_key=storage_key,
+                        github_url=github_url,
                     )
                 except HTTPException:
                     file_cache[finding.file] = None
