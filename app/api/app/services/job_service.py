@@ -13,7 +13,7 @@ from app.db.session import SessionLocal
 from app.cloud import CloudQualityManager
 from app.repositories.job_repository import JobRepository
 from app.services.analyzer_runner import AnalyzerRunner
-from app.schemas.job import Finding, JobCreateResponse, JobListItem, JobListResponse, JobResultsResponse, JobStatus, JobStatusResponse, JobSummary, PatchInfo
+from app.schemas.job import Finding, JobCreateResponse, JobListItem, JobListResponse, JobResultsResponse, JobStatus, JobStatusResponse, JobSummary
 from app.schemas.job import ArtifactInfo, JobArtifactsResponse, SourceFileResponse
 
 
@@ -144,9 +144,23 @@ class JobService:
             before = repository.get_findings_for_phase(job_id=job_id, phase=AnalysisPhase.BEFORE)
             after = repository.get_findings_for_phase(job_id=job_id, phase=AnalysisPhase.AFTER)
             patches = repository.get_patches(job_id=job_id)
+            job_context = repository.get_job_context(job_id)
 
             if not before:
                 raise HTTPException(status_code=409, detail="Analysis results are not available yet.")
+
+            self._attach_snippets(
+                findings=before,
+                repository_id=job_context.repository_id,
+                source_type=job_context.source_type,
+                phase="before",
+            )
+            self._attach_snippets(
+                findings=after,
+                repository_id=job_context.repository_id,
+                source_type=job_context.source_type,
+                phase="after",
+            )
 
             # Don't gate on 'after' — it's empty when repair hasn't run yet (READY_FOR_REPAIR)
             summary = self._build_summary(before, after)
@@ -218,7 +232,7 @@ class JobService:
 
         return artifact_path, artifact.content_type
 
-    def trigger_repair(self, job_id: str, repair_strategy: str) -> JobStatusResponse:
+    def trigger_repair(self, job_id: str) -> JobStatusResponse:
         self.logger.info("Trigger repair requested", extra={"event": "job_repair_trigger", "job_id": job_id})
         with self._lock:
             with SessionLocal() as session:
@@ -246,7 +260,7 @@ class JobService:
                 )
                 session.commit()
 
-        self.dispatch_repair_pipeline(job_id=job_id, repair_strategy=repair_strategy)
+            self.dispatch_repair_pipeline(job_id=job_id)
         self.logger.info("Repair dispatched", extra={"event": "job_repair_dispatched", "job_id": job_id})
         return self.get_job_status(job_id)
 
@@ -264,17 +278,11 @@ class JobService:
             }
         )
 
-    def dispatch_repair_pipeline(self, job_id: str, repair_strategy: str) -> None:
-        if not os.getenv("SQS_QUEUE_URL"):
-            self.logger.info("Running repair inline", extra={"event": "job_repair_inline", "job_id": job_id})
-            self.run_repair_pipeline(job_id=job_id, repair_strategy=repair_strategy)
-            return
-
+    def dispatch_repair_pipeline(self, job_id: str) -> None:
         self.cloud_manager.submit_job(
             {
                 "job_id": job_id,
-                "action": "repair",
-                "repair_strategy": repair_strategy,
+                "repair": True,
             }
         )
 
@@ -317,64 +325,7 @@ class JobService:
             return
 
         if auto_repair:
-            self.run_repair_pipeline(job_id=job_id, repair_strategy="balanced")
-
-    def run_repair_pipeline(self, job_id: str, repair_strategy: str = "balanced") -> None:
-        try:
-            self.logger.info("Repair pipeline started", extra={"event": "repair_pipeline_start", "job_id": job_id})
-            with self._lock:
-                with SessionLocal() as session:
-                    repository = JobRepository(session)
-                    job_context = repository.get_job_context(job_id)
-                    snapshot = repository.get_job_snapshot(job_id)
-                    if snapshot.status == JobStatusDb.DONE:
-                        return
-
-                    if snapshot.status != JobStatusDb.REPAIRING:
-                        self._transition(repository, job_id, JobStatusDb.REPAIRING, 80, f"applying_llm_repair_{repair_strategy}")
-                    else:
-                        repository.update_job_state(
-                            job_id,
-                            status=JobStatusDb.REPAIRING,
-                            progress=80,
-                            current_step=f"applying_llm_repair_{repair_strategy}",
-                        )
-
-                    self._transition(repository, job_id, JobStatusDb.REANALYZING, 92, "re_running_static_analysis")
-
-                    after_findings, after_reports = self.analyzer_runner.analyze_repository_with_reports(
-                        repository_id=job_context.repository_id,
-                        source_type=job_context.source_type,
-                        phase="after",
-                    )
-                    patches = [
-                        PatchInfo(
-                            file="app/service.py",
-                            diff_url=f"artifacts://{job_id}/patches/app_service.patch",
-                        )
-                    ]
-
-                    repository.replace_findings_for_phase(job_id=job_id, phase=AnalysisPhase.AFTER, findings=after_findings)
-                    repository.replace_patches(job_id=job_id, patches=patches)
-                    repair_artifacts = self._write_analysis_artifacts(
-                        job_id=job_id,
-                        stage="repair",
-                        artifact_type="analysis_report_after",
-                        reports=after_reports,
-                    )
-                    if repair_artifacts:
-                        repository.replace_artifacts_by_type(
-                            job_id=job_id,
-                            artifact_type="analysis_report_after",
-                            artifacts=repair_artifacts,
-                        )
-
-                    self._transition(repository, job_id, JobStatusDb.DONE, 100, "completed")
-                    session.commit()
-            self.logger.info("Repair pipeline completed", extra={"event": "repair_pipeline_complete", "job_id": job_id, "status": "DONE"})
-        except Exception as exc:
-            self.logger.exception("Repair pipeline failed", extra={"event": "repair_pipeline_failed", "job_id": job_id})
-            self._mark_failed(job_id=job_id, step="repair_failed", message=str(exc))
+            self.dispatch_repair_pipeline(job_id=job_id)
 
     def _write_analysis_artifacts(
         self,
@@ -454,6 +405,42 @@ class JobService:
                         error_code="PIPELINE_ERROR",
                     )
                     session.commit()
+
+    def _attach_snippets(
+        self,
+        findings: list[Finding],
+        repository_id: str,
+        source_type: str,
+        phase: str,
+        context: int = 3,
+    ) -> None:
+        file_cache: dict[str, list[str] | None] = {}
+
+        for finding in findings:
+            if not finding.file or finding.line <= 0:
+                continue
+
+            if finding.file not in file_cache:
+                try:
+                    file_cache[finding.file] = self.analyzer_runner.read_source_file(
+                        repository_id=repository_id,
+                        source_type=source_type,
+                        file_path=finding.file,
+                        phase=phase,
+                    )
+                except HTTPException:
+                    file_cache[finding.file] = None
+
+            source_lines = file_cache.get(finding.file)
+            if not source_lines:
+                continue
+
+            idx = max(0, finding.line - 1)
+            start = max(0, idx - context)
+            end = min(len(source_lines), idx + context + 1)
+
+            finding.snippet = source_lines[start:end]
+            finding.snippet_start = start + 1
 
     @staticmethod
     def _build_summary(before: list[Finding], after: list[Finding]) -> JobSummary:

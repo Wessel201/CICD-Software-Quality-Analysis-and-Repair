@@ -233,7 +233,8 @@ class AnalyzerRunner:
             repository_id=repository_id, source_type=source_type, phase=phase
         ).resolve()
 
-        requested = Path(file_path).resolve()
+        requested_path = Path(file_path)
+        requested = requested_path.resolve() if requested_path.is_absolute() else (source_directory / requested_path).resolve()
 
         # Security: prevent path traversal — file must be inside the source directory
         try:
