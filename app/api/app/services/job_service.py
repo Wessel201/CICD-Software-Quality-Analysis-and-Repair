@@ -144,9 +144,23 @@ class JobService:
             before = repository.get_findings_for_phase(job_id=job_id, phase=AnalysisPhase.BEFORE)
             after = repository.get_findings_for_phase(job_id=job_id, phase=AnalysisPhase.AFTER)
             patches = repository.get_patches(job_id=job_id)
+            job_context = repository.get_job_context(job_id)
 
             if not before:
                 raise HTTPException(status_code=409, detail="Analysis results are not available yet.")
+
+            self._attach_snippets(
+                findings=before,
+                repository_id=job_context.repository_id,
+                source_type=job_context.source_type,
+                phase="before",
+            )
+            self._attach_snippets(
+                findings=after,
+                repository_id=job_context.repository_id,
+                source_type=job_context.source_type,
+                phase="after",
+            )
 
             # Don't gate on 'after' — it's empty when repair hasn't run yet (READY_FOR_REPAIR)
             summary = self._build_summary(before, after)
@@ -454,6 +468,42 @@ class JobService:
                         error_code="PIPELINE_ERROR",
                     )
                     session.commit()
+
+    def _attach_snippets(
+        self,
+        findings: list[Finding],
+        repository_id: str,
+        source_type: str,
+        phase: str,
+        context: int = 3,
+    ) -> None:
+        file_cache: dict[str, list[str] | None] = {}
+
+        for finding in findings:
+            if not finding.file or finding.line <= 0:
+                continue
+
+            if finding.file not in file_cache:
+                try:
+                    file_cache[finding.file] = self.analyzer_runner.read_source_file(
+                        repository_id=repository_id,
+                        source_type=source_type,
+                        file_path=finding.file,
+                        phase=phase,
+                    )
+                except HTTPException:
+                    file_cache[finding.file] = None
+
+            source_lines = file_cache.get(finding.file)
+            if not source_lines:
+                continue
+
+            idx = max(0, finding.line - 1)
+            start = max(0, idx - context)
+            end = min(len(source_lines), idx + context + 1)
+
+            finding.snippet = source_lines[start:end]
+            finding.snippet_start = start + 1
 
     @staticmethod
     def _build_summary(before: list[Finding], after: list[Finding]) -> JobSummary:
