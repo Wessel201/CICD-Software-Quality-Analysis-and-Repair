@@ -15,13 +15,33 @@ resource "aws_appautoscaling_policy" "worker_scale_up" {
   service_namespace  = aws_appautoscaling_target.worker_target.service_namespace
 
   step_scaling_policy_configuration {
-    adjustment_type         = "ChangeInCapacity"
-    cooldown                = 60
+    adjustment_type         = "ExactCapacity"
+    cooldown                = 0
     metric_aggregation_type = "Maximum"
 
     step_adjustment {
       metric_interval_lower_bound = 0
       scaling_adjustment          = 1
+    }
+
+    step_adjustment {
+      metric_interval_lower_bound = 3
+      scaling_adjustment          = 2
+    }
+
+    step_adjustment {
+      metric_interval_lower_bound = 6
+      scaling_adjustment          = 3
+    }
+
+    step_adjustment {
+      metric_interval_lower_bound = 9
+      scaling_adjustment          = 4
+    }
+
+    step_adjustment {
+      metric_interval_lower_bound = 12
+      scaling_adjustment          = 5
     }
   }
 }
@@ -66,7 +86,7 @@ resource "aws_cloudwatch_metric_alarm" "queue_not_empty" {
 resource "aws_cloudwatch_metric_alarm" "queue_empty" {
   alarm_name          = "code-quality-queue-empty"
   comparison_operator = "LessThanOrEqualToThreshold"
-  evaluation_periods  = 3 
+  evaluation_periods  = 5
   metric_name         = "ApproximateNumberOfMessagesVisible"
   namespace           = "AWS/SQS"
   period              = 60

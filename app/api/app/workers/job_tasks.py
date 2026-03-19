@@ -8,5 +8,5 @@ def run_analysis_pipeline_task(job_id: str, auto_repair: bool) -> None:
 
 
 @celery_app.task(name="jobs.run_repair_pipeline")
-def run_repair_pipeline_task(job_id: str, repair_strategy: str) -> None:
-    JobService().run_repair_pipeline(job_id=job_id, repair_strategy=repair_strategy)
+def run_repair_pipeline_task(job_id: str) -> None:
+    JobService().trigger_repair(job_id=job_id)

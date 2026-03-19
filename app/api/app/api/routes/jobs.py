@@ -5,7 +5,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, sta
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from app.cloud import CloudQualityManager
-from app.schemas.job import JobArtifactsResponse, JobCreateResponse, JobListResponse, JobRepairRequest, JobResultsResponse, JobStatusResponse, SourceFileResponse
+from app.schemas.job import JobArtifactsResponse, JobCreateResponse, JobListResponse, JobResultsResponse, JobStatusResponse, SourceFileResponse
 from app.schemas.job import UploadUrlRequest, UploadUrlResponse
 from app.services.job_service import JobService
 from app.services.repository_service import RepositoryService
@@ -107,9 +107,9 @@ def download_job_artifact(job_id: str, artifact_id: int) -> Response:
 
 
 @router.post("/{job_id}/repair", response_model=JobStatusResponse, status_code=status.HTTP_202_ACCEPTED)
-def repair_job(job_id: str, payload: JobRepairRequest) -> JobStatusResponse:
+def repair_job(job_id: str) -> JobStatusResponse:
     logger.info("Repair requested", extra={"event": "job_repair_requested", "job_id": job_id})
-    return job_service.trigger_repair(job_id=job_id, repair_strategy=payload.repair_strategy)
+    return job_service.trigger_repair(job_id=job_id)
 
 
 @router.delete("/{job_id}", status_code=204)

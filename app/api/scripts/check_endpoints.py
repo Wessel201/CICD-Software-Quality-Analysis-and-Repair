@@ -92,7 +92,6 @@ def main() -> int:
             "POST",
             "/api/v1/jobs/job_nonexistent/repair",
             (404, 409),
-            {"repair_strategy": "balanced"},
         ),
         EndpointCheck("Delete job (missing)", "DELETE", "/api/v1/jobs/job_nonexistent", (204, 404)),
         EndpointCheck(

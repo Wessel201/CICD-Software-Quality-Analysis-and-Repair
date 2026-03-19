@@ -1,9 +1,15 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Finding, JobResult, JobStatus } from "../types";
-import { deleteJob, getJobSourceFile, sourceArchiveUrl } from "../lib/api";
+import {
+  artifactDownloadUrl,
+  deleteJob,
+  getJobArtifacts,
+  getJobSourceFile,
+  sourceArchiveUrl,
+} from "../lib/api";
 import { FindingDetailPanel } from "./FindingDetailPanel";
 import { FindingsTable } from "./FindingsTable";
 import { FileMapView } from "./FileMapView";
@@ -34,12 +40,43 @@ export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
   const [llmArchiveState, setLlmArchiveState] = useState<
     "idle" | "sending" | "done"
   >("idle");
+  const [repairedArchiveUrl, setRepairedArchiveUrl] = useState<string | null>(
+    null,
+  );
+  const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
 
   const findings = result.findings_before ?? [];
   const afterFindings = result.findings_after ?? [];
   const hasFindings = findings.length > 0;
   const hasRepaired = afterFindings.length > 0;
   const anyFileLlmDone = Object.values(llmFileState).some((s) => s === "done");
+
+  useEffect(() => {
+    let cancelled = false;
+    getJobArtifacts(result.job_id)
+      .then((artifacts) => {
+        if (cancelled) return;
+        const repaired = artifacts.find(
+          (artifact) => artifact.artifact_type === "repaired_source_archive",
+        );
+        if (!repaired || repaired.artifact_id == null) {
+          setRepairedArchiveUrl(null);
+          return;
+        }
+        setRepairedArchiveUrl(
+          artifactDownloadUrl(result.job_id, repaired.artifact_id),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRepairedArchiveUrl(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [result.job_id, jobStatus]);
 
   // Unique files sorted by finding count desc.
   // Two findings with different full paths but the same basename are merged
@@ -78,8 +115,15 @@ export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
       a.download = (phase === "after" ? "modified_" : "") + filename;
       a.click();
       URL.revokeObjectURL(a.href);
+      setDownloadNotice(null);
     } catch {
-      // silently ignore
+      if (phase === "after") {
+        setDownloadNotice(
+          "Modified download is not ready yet. Please wait for repair to complete and try again.",
+        );
+      } else {
+        setDownloadNotice("Could not download source file right now. Please try again.");
+      }
     }
   }
 
@@ -255,9 +299,10 @@ export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
             </a>
             {((jobStatus === "completed" && hasRepaired) ||
               anyFileLlmDone ||
-              llmArchiveState === "done") && (
+              llmArchiveState === "done") &&
+              repairedArchiveUrl && (
               <a
-                href={sourceArchiveUrl(result.job_id, "after")}
+                href={repairedArchiveUrl}
                 download
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-green-400 dark:border-green-700 text-green-700 dark:text-green-400 text-xs font-semibold hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors"
               >
@@ -277,6 +322,22 @@ export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
                 Modified (.zip)
               </a>
             )}
+            {((jobStatus === "completed" && hasRepaired) ||
+              anyFileLlmDone ||
+              llmArchiveState === "done") &&
+              !repairedArchiveUrl && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDownloadNotice(
+                      "Modified archive is still being prepared. Please check back in a moment.",
+                    )
+                  }
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400 text-xs font-semibold"
+                >
+                  Modified (.zip) not ready
+                </button>
+              )}
             {/* Send All to LLM — always visible, persists after sending */}
             <button
               type="button"
@@ -329,6 +390,12 @@ export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
               )}
             </button>
           </div>
+
+          {downloadNotice && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {downloadNotice}
+            </p>
+          )}
 
           {/* File accordion */}
           <div className="flex flex-col gap-0 divide-y divide-gray-200 dark:divide-gray-700 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">

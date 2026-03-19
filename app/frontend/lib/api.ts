@@ -272,8 +272,6 @@ export async function deleteJob(jobId: string): Promise<void> {
 export async function triggerRepair(jobId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/api/v1/jobs/${jobId}/repair`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repair_strategy: "balanced" }),
   });
   if (!res.ok) throw new Error(`Server error ${res.status}`);
 }

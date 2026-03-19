@@ -137,6 +137,7 @@ class SqsWorker:
         if not job_id:
             raise RuntimeError("Message payload missing job_id.")
 
+        repair_requested = bool(payload.get("repair", False))
         action = str(payload.get("action", "analyze")).lower()
         logger.info("Payload received", extra={"event": "payload_received", "job_id": job_id})
         with psycopg.connect(self.database_url) as conn:
@@ -144,7 +145,7 @@ class SqsWorker:
             context = self._get_job_context(conn, job_id)
             requested_cycles = payload.get("max_repair_cycles")
 
-            if action == "repair":
+            if repair_requested or action == "repair":
                 self._run_repair_pipeline(conn, context, requested_cycles=requested_cycles)
             else:
                 self._run_analysis_pipeline(conn, context, payload)
