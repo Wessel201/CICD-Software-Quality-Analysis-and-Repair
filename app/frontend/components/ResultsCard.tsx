@@ -34,6 +34,8 @@ export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
   const [expandedFilePath, setExpandedFilePath] = useState<string | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailNotice, setDetailNotice] = useState<string | null>(null);
   const [llmFileState, setLlmFileState] = useState<
     Record<string, "idle" | "sending" | "done">
   >({});
@@ -160,9 +162,39 @@ export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
         a.line === f.line,
     );
 
-  function handleSelectFinding(f: Finding) {
+  async function handleSelectFinding(f: Finding) {
     setSelectedFinding(f);
     setActiveTab("detail");
+    setDetailNotice(null);
+
+    if (f.snippet && f.snippet.length > 0) {
+      return;
+    }
+
+    setDetailLoading(true);
+    try {
+      const data = await getJobSourceFile(result.job_id, f.file, "before");
+      const idx = Math.max(0, f.line - 1);
+      const start = Math.max(0, idx - 3);
+      const end = Math.min(data.lines.length, idx + 4);
+      const snippet = data.lines.slice(start, end);
+
+      setSelectedFinding((prev) =>
+        prev && prev.file === f.file && prev.line === f.line
+          ? {
+              ...prev,
+              snippet,
+              snippet_start: start + 1,
+            }
+          : prev,
+      );
+    } catch {
+      setDetailNotice(
+        "Source code context is not available yet. The issue details are shown without inline code.",
+      );
+    } finally {
+      setDetailLoading(false);
+    }
   }
 
   function tabClass(tab: Tab) {
@@ -255,6 +287,16 @@ export function ResultsCard({ result, jobStatus, onRepair }: ResultsCardProps) {
       {/* ── Detail tab ── */}
       {activeTab === "detail" && (
         <div className="flex flex-col gap-3">
+          {detailLoading && (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Loading code context...
+            </p>
+          )}
+          {detailNotice && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {detailNotice}
+            </p>
+          )}
           {selectedFinding ? (
             <FindingDetailPanel
               finding={selectedFinding}
