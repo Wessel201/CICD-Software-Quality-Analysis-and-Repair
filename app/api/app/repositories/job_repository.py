@@ -36,6 +36,8 @@ class JobContext:
     job_id: str
     repository_id: str
     source_type: str
+    github_url: str | None = None
+    storage_key: str | None = None
 
 
 class JobRepository:
@@ -227,6 +229,8 @@ class JobRepository:
             job_id=job.id,
             repository_id=repository.id,
             source_type=repository.source_type.value,
+            github_url=repository.github_url,
+            storage_key=repository.storage_key,
         )
 
     def get_findings_for_phase(self, job_id: str, phase: AnalysisPhase) -> list[Finding]:
