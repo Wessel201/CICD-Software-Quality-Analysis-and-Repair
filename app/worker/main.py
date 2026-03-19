@@ -13,7 +13,7 @@ from zipfile import ZipFile
 
 import boto3
 import psycopg
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 
 from analyzer import Analyzer
 from repairman import Repairman
@@ -54,6 +54,12 @@ def configure_logging() -> None:
 
 configure_logging()
 logger = logging.getLogger(__name__)
+
+
+class NonRetryableLLMRequestError(RuntimeError):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"Non-retryable LLM request failure: HTTP {status_code}")
+        self.status_code = status_code
 
 
 def _build_database_url() -> str:
@@ -253,7 +259,7 @@ class SqsWorker:
                     80,
                     f"applying_llm_repair_balanced_cycle_{cycle}_of_{repair_cycles}",
                 )
-                applied_count = self._apply_repairs_for_findings(
+                applied_count, aborted_due_to_llm_unavailable = self._apply_repairs_for_findings(
                     source_dir=source_dir,
                     findings=repair_targets,
                     repairman=repairman,
@@ -279,6 +285,13 @@ class SqsWorker:
                 after_analysis = Analyzer(str(source_dir)).run_all()
                 after_findings = self._normalize_findings(after_analysis, source_dir)
                 self._replace_findings(conn, job_id, "after", after_findings)
+
+                if aborted_due_to_llm_unavailable:
+                    logger.warning(
+                        "Stopping additional repair cycles because LLM is unavailable",
+                        extra={"event": "repair_cycles_stopped_llm_unavailable", "job_id": job_id},
+                    )
+                    break
 
                 if not after_findings:
                     break
@@ -378,15 +391,16 @@ class SqsWorker:
         repairman: Repairman,
         llm_client: OpenAI | None,
         job_id: str,
-    ) -> int:
+    ) -> tuple[int, bool]:
         if not findings:
             logger.info(
                 "No findings available for repair",
                 extra={"event": "repair_targets_empty", "job_id": job_id},
             )
-            return 0
+            return 0, False
 
         applied_count = 0
+        aborted_due_to_llm_unavailable = False
         for finding in findings:
             file_path = str(finding.get("file_path", "")).strip()
             line = int(finding.get("line", 0) or 0)
@@ -427,6 +441,14 @@ class SqsWorker:
                     rule_id=str(finding.get("rule_id") or "UNKNOWN"),
                     issue_message=str(finding.get("message") or "Issue detected."),
                 )
+
+                if fixed_snippet is not None and fixed_snippet.strip() == str(snippet_data["snippet"]).strip():
+                    logger.info(
+                        "Skipping no-op snippet returned by LLM",
+                        extra={"event": "repair_llm_noop_snippet", "job_id": job_id},
+                    )
+                    continue
+
                 if not fixed_snippet:
                     continue
 
@@ -437,13 +459,24 @@ class SqsWorker:
                     fixed_snippet,
                 )
                 applied_count += 1
+            except NonRetryableLLMRequestError as exc:
+                aborted_due_to_llm_unavailable = True
+                logger.error(
+                    "Aborting remaining repairs due to non-retryable LLM failure",
+                    extra={
+                        "event": "repair_llm_non_retryable_abort",
+                        "job_id": job_id,
+                        "status": f"http_{exc.status_code}",
+                    },
+                )
+                break
             except Exception:
                 logger.exception(
                     "Failed to repair finding, continuing",
                     extra={"event": "repair_apply_error", "job_id": job_id},
                 )
 
-        return applied_count
+        return applied_count, aborted_due_to_llm_unavailable
 
     def _generate_fixed_snippet(
         self,
@@ -480,6 +513,17 @@ class SqsWorker:
                     {"role": "user", "content": prompt},
                 ],
             )
+        except APIStatusError as exc:
+            status_code = int(getattr(exc, "status_code", 0) or 0)
+            if status_code in (401, 402, 403):
+                logger.error(
+                    "DeepSeek unavailable for repair due to non-retryable status",
+                    extra={"event": "repair_llm_unavailable", "status": f"http_{status_code}"},
+                )
+                raise NonRetryableLLMRequestError(status_code)
+
+            logger.exception("DeepSeek repair request failed", extra={"event": "repair_llm_request_failed"})
+            return None
         except Exception:
             logger.exception("DeepSeek repair request failed", extra={"event": "repair_llm_request_failed"})
             return None
