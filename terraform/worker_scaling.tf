@@ -21,21 +21,25 @@ resource "aws_appautoscaling_policy" "worker_scale_up" {
 
     step_adjustment {
       metric_interval_lower_bound = 0
+      metric_interval_upper_bound = 3
       scaling_adjustment          = 1
     }
 
     step_adjustment {
       metric_interval_lower_bound = 3
+      metric_interval_upper_bound = 6
       scaling_adjustment          = 2
     }
 
     step_adjustment {
       metric_interval_lower_bound = 6
+      metric_interval_upper_bound = 9
       scaling_adjustment          = 3
     }
 
     step_adjustment {
       metric_interval_lower_bound = 9
+      metric_interval_upper_bound = 12
       scaling_adjustment          = 4
     }
 

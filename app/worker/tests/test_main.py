@@ -243,7 +243,7 @@ def test_run_analysis_pipeline_no_auto_repair(monkeypatch, env, tmp_path):
     monkeypatch.setattr(worker, "_prepare_source", lambda context: (source_dir, cleanup))
     monkeypatch.setattr(worker, "_update_job_state", lambda _c, _j, s, _p, _st: states.append(s))
     monkeypatch.setattr(worker, "_replace_findings", lambda *_: None)
-    monkeypatch.setattr(worker, "_normalize_findings", lambda _: [{"tool": "bandit", "rule_id": "X", "severity": "low", "category": "security", "file": "f.py", "line": 1, "message": "m", "suggestion": "s", "fingerprint": "fp"}])
+    monkeypatch.setattr(worker, "_normalize_findings", lambda _raw, _source_dir: [{"tool": "bandit", "rule_id": "X", "severity": "low", "category": "security", "file": "f.py", "line": 1, "message": "m", "suggestion": "s", "fingerprint": "fp"}])
     monkeypatch.setattr(worker_main.Analyzer, "run_all", lambda self: {})
     monkeypatch.setattr(worker, "_run_repair_pipeline", lambda *_: (_ for _ in ()).throw(AssertionError("unexpected repair")))
 
@@ -269,7 +269,7 @@ def test_run_analysis_pipeline_with_auto_repair(monkeypatch, env, tmp_path):
     monkeypatch.setattr(worker, "_prepare_source", lambda context: (source_dir, cleanup))
     monkeypatch.setattr(worker, "_update_job_state", lambda *_: None)
     monkeypatch.setattr(worker, "_replace_findings", lambda *_: None)
-    monkeypatch.setattr(worker, "_normalize_findings", lambda _: [])
+    monkeypatch.setattr(worker, "_normalize_findings", lambda _raw, _source_dir: [])
     monkeypatch.setattr(worker_main.Analyzer, "run_all", lambda self: {})
     monkeypatch.setattr(
         worker,
@@ -325,8 +325,11 @@ def test_run_repair_pipeline_with_existing_source(monkeypatch, env, tmp_path):
 
     monkeypatch.setattr(worker, "_update_job_state", lambda _c, _j, s, _p, _st: states.append(s))
     monkeypatch.setattr(worker_main.Analyzer, "run_all", lambda self: {})
-    monkeypatch.setattr(worker, "_normalize_findings", lambda _: [])
+    monkeypatch.setattr(worker, "_fetch_phase_findings", lambda _c, _j, _phase: [{"file_path": "f.py", "line": 1, "rule_id": "X", "message": "m"}])
+    monkeypatch.setattr(worker, "_normalize_findings", lambda _raw, _source_dir: [])
     monkeypatch.setattr(worker, "_replace_findings", lambda *_: None)
+
+    (source_dir / "f.py").write_text("print('x')\n", encoding="utf-8")
 
     worker._run_repair_pipeline(conn, {"job_id": "job_4"}, source_dir=source_dir)
     assert states == ["REPAIRING", "REANALYZING", "DONE"]
@@ -343,8 +346,11 @@ def test_run_repair_pipeline_without_source_creates_and_cleans(monkeypatch, env,
     monkeypatch.setattr(worker, "_prepare_source", lambda context: (source_dir, cleanup))
     monkeypatch.setattr(worker, "_update_job_state", lambda *_: None)
     monkeypatch.setattr(worker_main.Analyzer, "run_all", lambda self: {})
-    monkeypatch.setattr(worker, "_normalize_findings", lambda _: [])
+    monkeypatch.setattr(worker, "_fetch_phase_findings", lambda _c, _j, _phase: [{"file_path": "f.py", "line": 1, "rule_id": "X", "message": "m"}])
+    monkeypatch.setattr(worker, "_normalize_findings", lambda _raw, _source_dir: [])
     monkeypatch.setattr(worker, "_replace_findings", lambda *_: None)
+
+    (source_dir / "f.py").write_text("print('x')\n", encoding="utf-8")
 
     worker._run_repair_pipeline(conn, {"job_id": "job_5"})
     assert not cleanup.exists()
@@ -361,8 +367,11 @@ def test_run_repair_pipeline_failure_marks_failed(monkeypatch, env, tmp_path):
 
     monkeypatch.setattr(worker, "_prepare_source", lambda context: (source_dir, cleanup))
     monkeypatch.setattr(worker, "_update_job_state", lambda *_: None)
+    monkeypatch.setattr(worker, "_fetch_phase_findings", lambda _c, _j, _phase: [{"file_path": "f.py", "line": 1, "rule_id": "X", "message": "m"}])
     monkeypatch.setattr(worker_main.Analyzer, "run_all", lambda self: (_ for _ in ()).throw(RuntimeError("repair boom")))
     monkeypatch.setattr(worker, "_mark_failed", lambda _c, _j, step, msg: markers.setdefault("v", (step, msg)))
+
+    (source_dir / "f.py").write_text("print('x')\n", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="repair boom"):
         worker._run_repair_pipeline(conn, {"job_id": "job_6"})
@@ -381,11 +390,12 @@ def test_run_repair_pipeline_respects_max_cycle_cap(monkeypatch, env, tmp_path):
 
     steps = []
     monkeypatch.setattr(worker, "_update_job_state", lambda _c, _j, _s, _p, step: steps.append(step))
+    monkeypatch.setattr(worker, "_fetch_phase_findings", lambda _c, _j, _phase: [{"file_path": "x.py", "line": 1, "rule_id": "B1", "message": "m"}])
     monkeypatch.setattr(worker_main.Analyzer, "run_all", lambda self: {"bandit": {"results": [{"filename": "x.py", "line_number": 1}]}})
     monkeypatch.setattr(
         worker,
         "_normalize_findings",
-        lambda _raw: [
+        lambda _raw, _source_dir: [
             {
                 "tool": "bandit",
                 "rule_id": "B1",
@@ -400,6 +410,8 @@ def test_run_repair_pipeline_respects_max_cycle_cap(monkeypatch, env, tmp_path):
         ],
     )
     monkeypatch.setattr(worker, "_replace_findings", lambda *_: None)
+
+    (source_dir / "x.py").write_text("print('x')\n", encoding="utf-8")
 
     worker._run_repair_pipeline(
         conn,
@@ -577,8 +589,10 @@ def test_mark_failed_executes_sql_and_truncates(monkeypatch, env):
     assert params[1] == "x" * 4000
 
 
-def test_normalize_findings_and_severity_helpers(monkeypatch, env):
+def test_normalize_findings_and_severity_helpers(monkeypatch, env, tmp_path):
     worker, _, _ = _new_worker(monkeypatch)
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
     raw = {
         "bandit": {
             "results": [
@@ -615,7 +629,7 @@ def test_normalize_findings_and_severity_helpers(monkeypatch, env):
         ],
     }
 
-    findings = worker._normalize_findings(raw)
+    findings = worker._normalize_findings(raw, source_dir)
     assert len(findings) == 7
     sha1_finding = next(f for f in findings if f["rule_id"] == "B324")
     assert "SHA-256" in sha1_finding["suggestion"]
@@ -628,8 +642,10 @@ def test_normalize_findings_and_severity_helpers(monkeypatch, env):
     assert worker._severity_from_complexity(20) == "high"
 
 
-def test_normalize_findings_with_non_dict_radon(monkeypatch, env):
+def test_normalize_findings_with_non_dict_radon(monkeypatch, env, tmp_path):
     worker, _, _ = _new_worker(monkeypatch)
+    source_dir = tmp_path / "src2"
+    source_dir.mkdir()
     raw = {
         "bandit": {"results": []},
         "pylint": [],
@@ -642,7 +658,7 @@ def test_normalize_findings_with_non_dict_radon(monkeypatch, env):
         ],
     }
 
-    findings = worker._normalize_findings(raw)
+    findings = worker._normalize_findings(raw, source_dir)
     assert len(findings) == 1
     assert findings[0]["tool"] == "trufflehog"
 
@@ -721,3 +737,246 @@ def test_run_forever_skips_empty_polls(monkeypatch, env):
 
     assert observed["processed"] == 0
     assert observed["deleted"] == 0
+
+
+def test_fetch_phase_findings_filters_empty_file_paths(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+    conn = FakeConn(rows=[("a.py", 4, "R1", "m1"), ("", 2, "R2", "m2"), ("b.py", None, None, None)])
+    monkeypatch.setattr(worker, "_resolve_analysis_phase", lambda _conn, _phase: "before")
+
+    findings = worker._fetch_phase_findings(conn, "job_17", "before")
+
+    assert findings == [
+        {"file_path": "a.py", "line": 4, "rule_id": "R1", "message": "m1"},
+        {"file_path": "b.py", "line": 0, "rule_id": "UNKNOWN", "message": "Issue detected."},
+    ]
+
+
+def test_findings_to_repair_targets_filters_and_defaults(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+
+    targets = worker._findings_to_repair_targets(
+        [
+            {"file": "", "line": 1, "rule_id": "R", "message": "m"},
+            {"file": "app.py", "line": None, "rule_id": None, "message": None},
+        ]
+    )
+
+    assert targets == [
+        {"file_path": "app.py", "line": 0, "rule_id": "UNKNOWN", "message": "Issue detected."}
+    ]
+
+
+def test_build_llm_client_branches(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert worker._build_llm_client() is None
+
+    captured = {}
+
+    class FakeOpenAIClient:
+        def __init__(self, *, api_key, base_url):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setattr(worker_main, "OpenAI", FakeOpenAIClient)
+    client = worker._build_llm_client()
+
+    assert isinstance(client, FakeOpenAIClient)
+    assert captured["api_key"] == "k"
+    assert captured["base_url"] == "https://api.deepseek.com"
+
+
+def test_apply_repairs_for_findings_branches(monkeypatch, env, tmp_path):
+    worker, _, _ = _new_worker(monkeypatch)
+    source_dir = tmp_path / "src_apply"
+    source_dir.mkdir()
+    good_file = source_dir / "good.py"
+    bad_file = source_dir / "bad.py"
+    good_file.write_text("print('good')\n", encoding="utf-8")
+    bad_file.write_text("print('bad')\n", encoding="utf-8")
+
+    class FakeRepairman:
+        def __init__(self):
+            self.applied = []
+
+        def isolate_snippet(self, full_path, line):
+            if full_path.endswith("bad.py"):
+                raise RuntimeError("cannot isolate")
+            if full_path.endswith("empty.py"):
+                return {"snippet": "   ", "start_line": 1, "end_line": 1}
+            return {"snippet": "print('x')\n", "start_line": 1, "end_line": 1}
+
+        def apply_fix(self, full_path, start_line, end_line, fixed_snippet):
+            self.applied.append((full_path, start_line, end_line, fixed_snippet))
+
+    repairman = FakeRepairman()
+
+    assert worker._apply_repairs_for_findings(source_dir, [], repairman, None, "job_apply") == 0
+
+    empty_file = source_dir / "empty.py"
+    empty_file.write_text("print('empty')\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        worker,
+        "_generate_fixed_snippet",
+        lambda **kwargs: None if kwargs["rule_id"] == "NONE" else "print('fixed')",
+    )
+
+    applied_count = worker._apply_repairs_for_findings(
+        source_dir=source_dir,
+        findings=[
+            {"file_path": "", "line": 1, "rule_id": "SKIP", "message": "m"},
+            {"file_path": "good.py", "line": 0, "rule_id": "SKIP", "message": "m"},
+            {"file_path": "../outside.py", "line": 1, "rule_id": "SKIP", "message": "m"},
+            {"file_path": "missing.py", "line": 1, "rule_id": "SKIP", "message": "m"},
+            {"file_path": "empty.py", "line": 1, "rule_id": "SKIP", "message": "m"},
+            {"file_path": "good.py", "line": 1, "rule_id": "NONE", "message": "m"},
+            {"file_path": "good.py", "line": 1, "rule_id": "OK", "message": "m"},
+            {"file_path": "bad.py", "line": 1, "rule_id": "OK", "message": "m"},
+        ],
+        repairman=repairman,
+        llm_client=None,
+        job_id="job_apply",
+    )
+
+    assert applied_count == 1
+    assert len(repairman.applied) == 1
+
+
+def test_generate_fixed_snippet_branches(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+    assert worker._generate_fixed_snippet(None, "print(1)", 1, "R", "m") is None
+
+    class FailingClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    raise RuntimeError("llm down")
+
+    assert worker._generate_fixed_snippet(FailingClient(), "print(1)", 1, "R", "m") is None
+
+    class ParseFailClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    return type("Completion", (), {"choices": []})
+
+    assert worker._generate_fixed_snippet(ParseFailClient(), "print(1)", 1, "R", "m") is None
+
+    class EmptyClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    message = type("Message", (), {"content": "```python\n\n```"})
+                    choice = type("Choice", (), {"message": message})
+                    return type("Completion", (), {"choices": [choice]})
+
+    assert worker._generate_fixed_snippet(EmptyClient(), "print(1)", 1, "R", "m") is None
+
+    class SuccessClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    message = type("Message", (), {"content": "```python\nprint(2)\n```"})
+                    choice = type("Choice", (), {"message": message})
+                    return type("Completion", (), {"choices": [choice]})
+
+    fixed = worker._generate_fixed_snippet(SuccessClient(), "print(1)", 1, "R", "m")
+    assert fixed == "print(2)"
+
+
+def test_prompt_and_code_fence_helpers(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+
+    prompt = worker._build_repair_prompt("print(1)", 10, "B1", "issue")
+    assert "Rule: B1" in prompt
+    assert "print(1)" in prompt
+
+    assert worker._strip_code_fences("  print(1)  ") == "print(1)"
+    assert worker._strip_code_fences("```python\nprint(3)\n```") == "print(3)"
+    assert worker._strip_code_fences("```") == ""
+    assert worker._strip_code_fences("```python\nprint(4)") == "print(4)"
+
+
+def test_upload_archive_and_upsert_helpers(monkeypatch, env, tmp_path):
+    worker, _, fake_s3 = _new_worker(monkeypatch)
+    source_dir = tmp_path / "src_zip"
+    workspace = tmp_path / "workspace_zip"
+    source_dir.mkdir()
+    workspace.mkdir()
+    (source_dir / "nested").mkdir()
+    (source_dir / "nested" / "x.py").write_text("print('x')\n", encoding="utf-8")
+
+    uploads = {}
+
+    def fake_upload(file_name, bucket, key):
+        uploads["file_name"] = file_name
+        uploads["bucket"] = bucket
+        uploads["key"] = key
+
+    fake_s3.upload_file = fake_upload
+
+    storage_key = worker._upload_fixed_repository_archive(
+        context={"job_id": "job_up", "storage_key": "uploads/repo.zip"},
+        source_dir=source_dir,
+        workspace=workspace,
+    )
+    assert storage_key == "s3://uploads/repo.zip_fixed.zip"
+    assert uploads["bucket"] == "artifacts-bucket"
+    assert uploads["key"] == "uploads/repo.zip_fixed.zip"
+
+    conn = FakeConn()
+    worker._upsert_artifact_record(conn, "job_up", "repaired_source_archive", storage_key, "application/zip")
+    queries = [q for q, _ in conn.cursor_obj.queries]
+    assert "DELETE FROM artifacts" in queries[0]
+    assert "INSERT INTO artifacts" in queries[1]
+
+
+def test_run_repair_pipeline_upserts_uploaded_artifact(monkeypatch, env, tmp_path):
+    worker, _, _ = _new_worker(monkeypatch)
+    conn = FakeConn()
+    source_dir = tmp_path / "repair_upsert"
+    source_dir.mkdir()
+
+    called = {}
+    monkeypatch.setattr(worker, "_fetch_phase_findings", lambda _c, _j, _phase: [])
+    monkeypatch.setattr(worker, "_build_llm_client", lambda: None)
+    monkeypatch.setattr(worker_main.Analyzer, "run_all", lambda self: {})
+    monkeypatch.setattr(worker, "_normalize_findings", lambda _raw, _source_dir: [])
+    monkeypatch.setattr(worker, "_replace_findings", lambda *_: None)
+    monkeypatch.setattr(worker, "_upload_fixed_repository_archive", lambda **kwargs: "s3://uploads/fixed.zip")
+    monkeypatch.setattr(worker, "_upsert_artifact_record", lambda **kwargs: called.setdefault("upsert", kwargs))
+    monkeypatch.setattr(worker, "_update_job_state", lambda *_: None)
+
+    worker._run_repair_pipeline(conn, {"job_id": "job_upsert", "storage_key": "uploads/r.zip"}, source_dir=source_dir)
+    assert called["upsert"]["artifact_type"] == "repaired_source_archive"
+
+
+def test_resolve_analysis_phase_exact_match_branch(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+    conn = FakeConn(rows=[("BEFORE",), ("AFTER",)])
+
+    resolved = worker._resolve_analysis_phase(conn, "AFTER")
+    assert resolved == "AFTER"
+
+
+def test_resolve_analysis_phase_fallback_exact_label_branch(monkeypatch, env):
+    worker, _, _ = _new_worker(monkeypatch)
+    conn = FakeConn(rows=[("AFTER",)])
+
+    class WeirdPhase(str):
+        def strip(self):
+            return self
+
+        def lower(self):
+            return "__not_present__"
+
+    resolved = worker._resolve_analysis_phase(conn, WeirdPhase("AFTER"))
+    assert resolved == "AFTER"

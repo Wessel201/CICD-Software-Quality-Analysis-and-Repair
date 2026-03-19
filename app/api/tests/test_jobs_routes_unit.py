@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -108,11 +109,11 @@ def test_repair_route(monkeypatch):
     monkeypatch.setattr(
         jobs_routes.job_service,
         "trigger_repair",
-        lambda job_id, repair_strategy: JobStatusResponse(
+        lambda job_id: JobStatusResponse(
             job_id=job_id,
             status=JobStatus.REPAIRING,
             progress=70,
-            current_step=f"repair_{repair_strategy}",
+            current_step="repair_queued",
             error=None,
         ),
     )
@@ -155,3 +156,19 @@ def test_request_upload_url_route(monkeypatch):
     res = mounted.post("/api/v1/jobs/upload-url", json={"filename": "repo.zip"})
     assert res.status_code == 200
     assert res.json()["s3_key"] == "uploads/sub/repo.zip"
+
+
+def test_download_artifact_file_response_branch(monkeypatch, tmp_path):
+    mounted = _mount_client()
+    artifact_file = tmp_path / "report.json"
+    artifact_file.write_text('{"ok": true}', encoding="utf-8")
+
+    monkeypatch.setattr(
+        jobs_routes.job_service,
+        "get_job_artifact_download",
+        lambda job_id, artifact_id: (Path(artifact_file), "application/json"),
+    )
+
+    res = mounted.get("/api/v1/jobs/job_9/artifacts/1/download")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("application/json")

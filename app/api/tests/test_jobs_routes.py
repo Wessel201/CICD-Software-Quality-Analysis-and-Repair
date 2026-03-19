@@ -87,7 +87,7 @@ def test_create_job_rejects_missing_source() -> None:
 
     assert response.status_code == 400
     payload = response.json()
-    assert payload["detail"]["error"]["code"] == "INVALID_SOURCE"
+    assert payload["error"]["code"] == "INVALID_SOURCE"
 
 
 def test_create_job_rejects_both_sources(monkeypatch) -> None:
@@ -102,7 +102,7 @@ def test_create_job_rejects_both_sources(monkeypatch) -> None:
 
     assert response.status_code == 400
     payload = response.json()
-    assert payload["detail"]["error"]["code"] == "INVALID_SOURCE"
+    assert payload["error"]["code"] == "INVALID_SOURCE"
 
 
 def test_create_job_from_github_url_auto_repair(monkeypatch) -> None:
@@ -116,6 +116,7 @@ def test_create_job_from_github_url_auto_repair(monkeypatch) -> None:
         "analyze_repository_with_reports",
         lambda repository_id, source_type, phase: _mock_analyzer_findings_with_reports(phase=phase),
     )
+    monkeypatch.setattr(jobs_routes.job_service, "dispatch_repair_pipeline", lambda job_id: None)
 
     response = client.post(
         "/api/v1/jobs",
@@ -125,7 +126,7 @@ def test_create_job_from_github_url_auto_repair(monkeypatch) -> None:
     assert response.status_code == 202
     payload = response.json()
     assert payload["job_id"].startswith("job_")
-    assert payload["status"] == "DONE"
+    assert payload["status"] == "READY_FOR_REPAIR"
 
 
 def test_create_job_from_upload_then_repair(monkeypatch) -> None:
@@ -134,6 +135,7 @@ def test_create_job_from_upload_then_repair(monkeypatch) -> None:
         "analyze_repository_with_reports",
         lambda repository_id, source_type, phase: _mock_analyzer_findings_with_reports(phase=phase),
     )
+    monkeypatch.setattr(jobs_routes.job_service, "dispatch_repair_pipeline", lambda job_id: None)
 
     create_response = client.post(
         "/api/v1/jobs",
@@ -155,30 +157,29 @@ def test_create_job_from_upload_then_repair(monkeypatch) -> None:
         json={"repair_strategy": "balanced"},
     )
     assert repair_response.status_code == 202
-    assert repair_response.json()["status"] == "DONE"
+    assert repair_response.json()["status"] == "REPAIRING"
 
     results_response = client.get(f"/api/v1/jobs/{job_id}/results")
     assert results_response.status_code == 200
     results_payload = results_response.json()
-    assert results_payload["status"] == "DONE"
+    assert results_payload["status"] == "REPAIRING"
     assert results_payload["summary"]["before_total"] == 3
-    assert results_payload["summary"]["after_total"] == 1
-    assert len(results_payload["patches"]) == 1
+    assert results_payload["summary"]["after_total"] == 0
+    assert len(results_payload["patches"]) == 0
 
     artifacts_response = client.get(f"/api/v1/jobs/{job_id}/artifacts")
     assert artifacts_response.status_code == 200
     artifacts_payload = artifacts_response.json()
     assert artifacts_payload["job_id"] == job_id
-    assert len(artifacts_payload["artifacts"]) == 5
+    assert len(artifacts_payload["artifacts"]) >= 3
     artifact_types = {artifact["artifact_type"] for artifact in artifacts_payload["artifacts"]}
-    assert "patch" in artifact_types
     assert "analysis_report" in artifact_types
-    assert "analysis_report_after" in artifact_types
+    assert "analysis_report_after" not in artifact_types
 
     analysis_artifact_keys = [
         artifact["storage_key"]
         for artifact in artifacts_payload["artifacts"]
-        if artifact["artifact_type"] in {"analysis_report", "analysis_report_after"}
+        if artifact["artifact_type"] == "analysis_report"
     ]
     assert analysis_artifact_keys
     assert all(Path(key).exists() for key in analysis_artifact_keys)
@@ -229,4 +230,4 @@ def test_create_job_rejects_direct_file_upload(monkeypatch) -> None:
 
     assert response.status_code == 400
     payload = response.json()
-    assert payload["detail"]["error"]["code"] == "DIRECT_UPLOAD_REQUIRED"
+    assert payload["error"]["code"] == "DIRECT_UPLOAD_REQUIRED"
