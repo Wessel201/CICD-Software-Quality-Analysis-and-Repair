@@ -2,7 +2,6 @@ from threading import Lock
 from uuid import uuid4
 import os
 from pathlib import Path
-import json
 import logging
 
 from fastapi import HTTPException
@@ -14,7 +13,7 @@ from app.cloud import CloudQualityManager
 from app.repositories.job_repository import JobRepository
 from app.services.analyzer_runner import AnalyzerRunner
 from app.schemas.job import Finding, JobCreateResponse, JobListItem, JobListResponse, JobResultsResponse, JobStatus, JobStatusResponse, JobSummary
-from app.schemas.job import ArtifactInfo, JobArtifactsResponse, SourceFileResponse
+from app.schemas.job import JobArtifactsResponse, SourceFileResponse
 
 
 class JobService:
@@ -273,11 +272,6 @@ class JobService:
         return self.get_job_status(job_id)
 
     def dispatch_analysis_pipeline(self, job_id: str, auto_repair: bool) -> None:
-        if not os.getenv("SQS_QUEUE_URL"):
-            self.logger.info("Running analysis inline", extra={"event": "job_analysis_inline", "job_id": job_id})
-            self.run_analysis_pipeline(job_id=job_id, auto_repair=auto_repair)
-            return
-
         self.cloud_manager.submit_job(
             {
                 "job_id": job_id,
@@ -290,76 +284,9 @@ class JobService:
         self.cloud_manager.submit_job(
             {
                 "job_id": job_id,
-                "repair": True,
+                "action": "repair",
             }
         )
-
-    def run_analysis_pipeline(self, job_id: str, auto_repair: bool) -> None:
-        try:
-            self.logger.info("Analysis pipeline started", extra={"event": "analysis_pipeline_start", "job_id": job_id})
-            with self._lock:
-                with SessionLocal() as session:
-                    repository = JobRepository(session)
-                    job_context = repository.get_job_context(job_id)
-
-                    self._transition(repository, job_id, JobStatusDb.FETCHING, 15, "fetching_source")
-                    self._transition(repository, job_id, JobStatusDb.ANALYZING, 50, "running_static_analysis")
-
-                    before_findings, before_reports = self.analyzer_runner.analyze_repository_with_reports(
-                        repository_id=job_context.repository_id,
-                        source_type=job_context.source_type,
-                        phase="before",
-                        storage_key=job_context.storage_key,
-                        github_url=job_context.github_url,
-                    )
-                    repository.replace_findings_for_phase(job_id=job_id, phase=AnalysisPhase.BEFORE, findings=before_findings)
-                    analysis_artifacts = self._write_analysis_artifacts(
-                        job_id=job_id,
-                        stage="analysis",
-                        artifact_type="analysis_report",
-                        reports=before_reports,
-                    )
-                    if analysis_artifacts:
-                        repository.replace_artifacts_by_type(
-                            job_id=job_id,
-                            artifact_type="analysis_report",
-                            artifacts=analysis_artifacts,
-                        )
-
-                    self._transition(repository, job_id, JobStatusDb.READY_FOR_REPAIR, 65, "analysis_completed")
-                    session.commit()
-            self.logger.info("Analysis pipeline completed", extra={"event": "analysis_pipeline_complete", "job_id": job_id})
-        except Exception as exc:
-            self.logger.exception("Analysis pipeline failed", extra={"event": "analysis_pipeline_failed", "job_id": job_id})
-            self._mark_failed(job_id=job_id, step="analysis_failed", message=str(exc))
-            return
-
-        if auto_repair:
-            self.dispatch_repair_pipeline(job_id=job_id)
-
-    def _write_analysis_artifacts(
-        self,
-        job_id: str,
-        stage: str,
-        artifact_type: str,
-        reports: dict[str, object],
-    ) -> list[ArtifactInfo]:
-        artifacts_dir = Path("uploads") / job_id / "artifacts" / stage
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
-
-        artifacts: list[ArtifactInfo] = []
-        for tool, payload in reports.items():
-            artifact_file = artifacts_dir / f"{tool}.json"
-            artifact_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            artifacts.append(
-                ArtifactInfo(
-                    artifact_type=artifact_type,
-                    storage_key=artifact_file.as_posix(),
-                    content_type="application/json",
-                )
-            )
-
-        return artifacts
 
     def reset_state_for_tests(self) -> None:
         init_db()

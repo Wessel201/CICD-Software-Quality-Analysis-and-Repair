@@ -37,6 +37,15 @@ def test_create_job_github_none_guard(monkeypatch):
 def test_create_job_upload_none_guard(monkeypatch):
     mounted = _mount_client()
     monkeypatch.setattr(jobs_routes, "validate_job_source", lambda **kwargs: "upload")
+    monkeypatch.setattr(
+        jobs_routes.job_service,
+        "create_job",
+        lambda **kwargs: JobCreateResponse(
+            job_id="job_upload_guard",
+            status=JobStatus.QUEUED,
+            created_at=datetime.now(timezone.utc),
+        ),
+    )
     res = mounted.post("/api/v1/jobs", data={"auto_repair": "true"})
     assert res.status_code == 202
     assert res.json()["job_id"]

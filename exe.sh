@@ -15,7 +15,7 @@ compose_down() {
 }
 
 compose_logs() {
-  docker compose logs -f api worker postgres redis
+  docker compose logs -f api worker postgres
 }
 
 compose_restart() {

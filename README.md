@@ -6,14 +6,12 @@ For backend run instructions (Docker + local `.venv`), see `app/api/README.md`.
 
 This repository now exposes a jobs-first FastAPI contract:
 
-- `POST /api/v1/jobs` to create an analysis/repair job from either `github_url` or an uploaded `file`
+- `POST /api/v1/jobs` to create an analysis/repair job from either `github_url` or an uploaded archive referenced by `s3_key`
 - `GET /api/v1/jobs/{job_id}` to retrieve job status and progress
 - `GET /api/v1/jobs/{job_id}/results` to retrieve before/after findings and patch references
 - `GET /api/v1/jobs/{job_id}/artifacts` to retrieve artifact metadata for the job
 - `GET /api/v1/jobs/{job_id}/artifacts/{artifact_id}/download` to download a specific artifact file
 - `POST /api/v1/jobs/{job_id}/repair` to trigger repair when a job is `READY_FOR_REPAIR`
-
-Job creation enforces a maximum repository size of `100 MB` for uploaded archives.
 
 ### Run locally
 
@@ -33,19 +31,13 @@ From `app/api`:
 
 ### Jobs pipeline execution
 
-The jobs API now dispatches analysis and repair through Celery tasks.
+The jobs API is now a submission and status layer only.
 
-- Default local mode uses `CELERY_TASK_ALWAYS_EAGER=true` so tasks run in-process (no Redis needed).
-- For real async execution, run with `CELERY_TASK_ALWAYS_EAGER=false` and provide a broker.
+- `app/api` stores job metadata and submits work to SQS.
+- `app/worker` is the only component that fetches source code, runs analysis, and performs repair.
+- GitHub repositories are no longer cloned on the API host during job creation.
 
-Example (real async):
-
-1. Start Redis (`redis://localhost:6379/0`)
-2. In `app/api` run API:
-   - `set CELERY_TASK_ALWAYS_EAGER=false`
-   - `uvicorn app.main:app --reload`
-3. In another terminal run worker:
-   - `celery -A app.celery_app:celery_app worker --loglevel=info`
+For async execution, run the API and worker with shared database access plus the SQS/S3/AWS environment needed by the worker pipeline.
 
 ### Database and migrations
 

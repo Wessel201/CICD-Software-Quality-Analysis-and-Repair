@@ -35,7 +35,7 @@ For a Next.js frontend, prefer server-side proxying so the key stays private:
 
 ## Option 1: Run with Docker (recommended)
 
-Use this option for the full stack (API + worker + Redis + Postgres).
+Use this option for the full stack (API + worker + Postgres).
 
 ### Prerequisites
 
@@ -98,32 +98,27 @@ Run from `app/api`:
 alembic -c alembic.ini upgrade head
 ```
 
-### Run API only (eager mode)
+### Run API only
+
+Useful for contract development and read-only endpoints. Job submission and repair still require the worker pipeline and its queue/storage configuration.
 
 ```powershell
-$env:CELERY_TASK_ALWAYS_EAGER="true"
 uvicorn app.main:app --reload
 ```
 
-### Run API + async worker locally
+### Run API + worker locally
 
-1. Start Redis (local or Docker)
+1. Configure `DATABASE_URL`, `SQS_QUEUE_URL`, `S3_BUCKET_NAME`, and AWS credentials/region as needed.
 2. Start API terminal:
 
 ```powershell
-$env:CELERY_TASK_ALWAYS_EAGER="false"
-$env:CELERY_BROKER_URL="redis://localhost:6379/0"
-$env:CELERY_RESULT_BACKEND="redis://localhost:6379/0"
 uvicorn app.main:app --reload
 ```
 
 3. Start worker in second terminal:
 
 ```powershell
-$env:CELERY_TASK_ALWAYS_EAGER="false"
-$env:CELERY_BROKER_URL="redis://localhost:6379/0"
-$env:CELERY_RESULT_BACKEND="redis://localhost:6379/0"
-celery -A app.celery_app:celery_app worker --loglevel=info
+python ../worker/main.py
 ```
 
 ---
@@ -140,5 +135,6 @@ pytest -q
 
 ## Notes
 
-- Artifact JSON files are written under `app/api/uploads/<job_id>/artifacts/...`.
-- In Docker, this storage is mounted via the `uploads_data` volume.
+- The API no longer performs analysis or repair work in-process.
+- `app/worker` owns source fetching, static analysis, and repair execution.
+- In Docker, uploaded source storage is mounted via the `uploads_data` volume.
