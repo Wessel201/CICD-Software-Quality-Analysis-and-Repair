@@ -16,32 +16,19 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7
-    container_name: cq_redis
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   api:
     build:
       context: ./app/api
       dockerfile: Dockerfile
     container_name: cq_api
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+psycopg://postgres_admin:app@postgres:5432/codequality
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/0
-      CELERY_TASK_ALWAYS_EAGER: "false"
       AUTO_INIT_DB: "true"
       API_KEY: ${API_KEY:-prototype_api_key}
-      WORKER_URL: http://worker-llm:8000
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     ports:
       - "8000:8000"
@@ -50,37 +37,17 @@ services:
 
   worker:
     build:
-      context: ./app/api
-      dockerfile: Dockerfile
-    container_name: cq_worker
-    command:
-      ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=info"]
-    environment:
-      DATABASE_URL: postgresql+psycopg://postgres_admin:app@postgres:5432/codequality
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/0
-      CELERY_TASK_ALWAYS_EAGER: "false"
-      AUTO_INIT_DB: "true"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - uploads_data:/code/uploads
-
-  worker-llm:
-    build:
       context: ./app/worker
-    container_name: cq_worker_llm
-    volumes:
-      - uploads_data:/uploads
-    ports:
-      - "8002:8000"
+    container_name: cq_worker
     env_file:
       - .env
     environment:
-      - WORKER_API_KEY=${WORKER_API_KEY:-default_secret_key}
+      DATABASE_URL: postgresql://postgres_admin:app@postgres:5432/codequality
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/uploads
 
 volumes:
   postgres_data:

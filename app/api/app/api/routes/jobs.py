@@ -57,7 +57,7 @@ def create_job(
     if source_type == "github_url":
         if github_url is None:
             raise HTTPException(status_code=400, detail="github_url is required.")
-        repository_id, _ = repository_service.clone_public_repository(github_url)
+        repository_id = str(uuid4())
     else:
         repository_id = str(uuid4())
         storage_key = s3_key

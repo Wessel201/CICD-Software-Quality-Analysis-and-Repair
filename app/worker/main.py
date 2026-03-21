@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import uuid
+import ast
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
@@ -408,6 +409,13 @@ class SqsWorker:
             if not file_path or line <= 0:
                 continue
 
+            if self._is_ignored_source_path(file_path):
+                logger.info(
+                    "Skipping ignored source path during repair",
+                    extra={"event": "repair_skip_ignored_source_path", "job_id": job_id},
+                )
+                continue
+
             full_path = (source_dir / file_path).resolve()
             try:
                 full_path.relative_to(source_dir.resolve())
@@ -450,6 +458,18 @@ class SqsWorker:
                     continue
 
                 if not fixed_snippet:
+                    continue
+
+                if self._would_introduce_syntax_error(
+                    file_path=full_path,
+                    start_line=int(snippet_data["start_line"]),
+                    end_line=int(snippet_data["end_line"]),
+                    replacement_snippet=fixed_snippet,
+                ):
+                    logger.warning(
+                        "Skipping repair that would introduce Python syntax errors",
+                        extra={"event": "repair_skip_invalid_python_syntax", "job_id": job_id},
+                    )
                     continue
 
                 repairman.apply_fix(
@@ -616,7 +636,69 @@ class SqsWorker:
         with ZipFile(archive_path, "w") as archive:
             for file_path in source_dir.rglob("*"):
                 if file_path.is_file():
+                    relative_path = file_path.relative_to(source_dir)
+                    if SqsWorker._is_ignored_source_path(str(relative_path)):
+                        continue
                     archive.write(file_path, file_path.relative_to(source_dir))
+
+    @staticmethod
+    def _is_ignored_source_path(path_str: str) -> bool:
+        normalized = path_str.replace("\\", "/").lstrip("./")
+        if not normalized:
+            return False
+
+        parts = [part for part in normalized.split("/") if part]
+        if not parts:
+            return False
+
+        if "__MACOSX" in parts:
+            return True
+
+        for part in parts:
+            if part.startswith("._") or part == ".DS_Store":
+                return True
+
+        return False
+
+    def _strip_ignored_source_artifacts(self, source_dir: Path) -> None:
+        for path in sorted(source_dir.rglob("*"), reverse=True):
+            relative_path = path.relative_to(source_dir)
+            if not self._is_ignored_source_path(str(relative_path)):
+                continue
+
+            if path.is_file() or path.is_symlink():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+
+    @staticmethod
+    def _would_introduce_syntax_error(
+        file_path: Path,
+        start_line: int,
+        end_line: int,
+        replacement_snippet: str,
+    ) -> bool:
+        if file_path.suffix.lower() != ".py":
+            return False
+
+        try:
+            original_text = file_path.read_text(encoding="utf-8")
+        except Exception:
+            return False
+
+        lines = original_text.splitlines(keepends=True)
+        replacement_lines = replacement_snippet.splitlines(keepends=True)
+        if replacement_snippet and not replacement_snippet.endswith("\n"):
+            replacement_lines.append("\n")
+
+        candidate_lines = lines[: max(0, start_line - 1)] + replacement_lines + lines[end_line:]
+        candidate_text = "".join(candidate_lines)
+
+        try:
+            ast.parse(candidate_text)
+            return False
+        except SyntaxError:
+            return True
 
     def _prepare_source(self, context: dict[str, Any]) -> tuple[Path, Path]:
         workspace = Path(tempfile.mkdtemp(prefix=f"job_{context['job_id']}_"))
@@ -636,6 +718,7 @@ class SqsWorker:
                 text=True,
                 timeout=180,
             )
+            self._strip_ignored_source_artifacts(source_dir)
             logger.info("Repository cloned", extra={"event": "source_clone_complete", "job_id": context["job_id"]})
             return source_dir, workspace
 
@@ -651,6 +734,7 @@ class SqsWorker:
         try:
             with ZipFile(archive_path, "r") as archive:
                 archive.extractall(source_dir)
+            self._strip_ignored_source_artifacts(source_dir)
             logger.info("Source archive unpacked", extra={"event": "source_unpack_complete", "job_id": context["job_id"]})
         except Exception as exc:
             raise RuntimeError(f"Failed to unpack source archive: {exc}") from exc
@@ -785,6 +869,8 @@ class SqsWorker:
 
         for issue in raw_results.get("bandit", {}).get("results", []):
             file_path = make_relative(str(issue.get("filename", "")))
+            if self._is_ignored_source_path(file_path):
+                continue
             line = int(issue.get("line_number", 0) or 0)
             rule = str(issue.get("test_id", "BANDIT"))
             message = str(issue.get("issue_text", "Security issue detected."))
@@ -804,6 +890,8 @@ class SqsWorker:
 
         for issue in raw_results.get("pylint", []):
             file_path = make_relative(str(issue.get("path", "")))
+            if self._is_ignored_source_path(file_path):
+                continue
             line = int(issue.get("line", 0) or 0)
             rule = str(issue.get("message-id", "PYLINT"))
             findings.append(
@@ -826,6 +914,8 @@ class SqsWorker:
                 if not isinstance(blocks, list):
                     continue
                 file_path = make_relative(str(raw_file_path))
+                if self._is_ignored_source_path(file_path):
+                    continue
                 for block in blocks:
                     complexity = int(block.get("complexity", 0) or 0)
                     line = int(block.get("lineno", 0) or 0)
@@ -848,6 +938,8 @@ class SqsWorker:
             source_data = source_metadata.get("Data", {}) if isinstance(source_metadata, dict) else {}
             fs_data = source_data.get("Filesystem", {}) if isinstance(source_data, dict) else {}
             file_path = make_relative(str(fs_data.get("file", "")))
+            if self._is_ignored_source_path(file_path):
+                continue
             line = int(fs_data.get("line", 0) or 0)
             rule = str(issue.get("DetectorName", "TRUFFLEHOG"))
             findings.append(

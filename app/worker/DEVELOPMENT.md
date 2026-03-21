@@ -40,6 +40,38 @@ Production authority:
 6. Update job lifecycle status in `jobs`
 7. Delete SQS message on success; keep on failure for retry/DLQ handling
 
+## Local Single-File Run (No SQS/DB/S3)
+
+Use the local runner to execute worker analysis/repair logic for one file directly:
+
+```bash
+cd app/worker
+python run_local_file.py /absolute/path/to/file.py
+```
+
+Run with repair enabled (requires `OPENAI_API_KEY`; optional `REPAIR_MODEL`):
+
+```bash
+cd app/worker
+OPENAI_API_KEY=... REPAIR_MODEL=deepseek-chat python run_local_file.py /absolute/path/to/file.py --repair --cycles 1
+```
+
+Write repaired result back to the original file:
+
+```bash
+cd app/worker
+OPENAI_API_KEY=... python run_local_file.py /absolute/path/to/file.py --repair --in-place
+```
+
+`--in_place` is also accepted as an alias for `--in-place`.
+
+Write JSON output to a file instead of stdout:
+
+```bash
+cd app/worker
+python run_local_file.py /absolute/path/to/file.py --output /tmp/worker-local-result.json
+```
+
 ## Remaining Work
 
 ### Cloud Interaction

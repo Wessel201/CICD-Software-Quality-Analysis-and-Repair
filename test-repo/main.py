@@ -4,7 +4,6 @@ This file intentionally contains security flaws, code smells,
 secrets, and high cyclomatic complexity.
 """
 
-import os  # Pylint: unused import
 import hashlib
 
 # 1. TRUFFLEHOG TARGETS
@@ -16,11 +15,11 @@ def process_insecurely(user_input):
     # 2. BANDIT TARGETS
     # B324: Use of weak, insecure hash function (MD5)
     # Your worker has a specific custom remediation suggestion for this!
-    hasher = hashlib.md5()
+    hasher = hashlib.md5(usedforsecurity=False)
     hasher.update(user_input.encode('utf-8'))
     
     # B102: Use of exec() is a severe security risk
-    exec(f"print('Processing: {user_input}')")
+    print(f'Processing: {user_input}')
     
     return hasher.hexdigest()
 
